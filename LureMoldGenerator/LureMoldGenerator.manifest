@@ -1,0 +1,13 @@
+{
+    "autodeskProduct": "Fusion360",
+    "type": "addin",
+    "id": "b7f4e2a1-6c93-4d58-9a17-3e5c8b0d4f26",
+    "author": "",
+    "description": {
+        "": "Generates a printable two-part soft-plastic injection mold around a lure mesh, with alignment pegs, injection sprues and vents placed automatically."
+    },
+    "version": "1.0.0",
+    "runOnStartup": true,
+    "supportedOS": "windows|mac",
+    "editEnabled": true
+}
