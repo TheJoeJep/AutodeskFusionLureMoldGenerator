@@ -14,6 +14,7 @@ import math
 import adsk.core
 import adsk.fusion
 
+from . import mesh_audit
 from . import mesh_repair
 from . import parting
 from . import relief
@@ -58,7 +59,7 @@ class OrientedLure:
                  nose_at_positive_x, axes, center_mm, repaired_faces=0,
                  volume_mm3=0.0, suggested_parting_mm=0.0, parting_score=0.0,
                  centred_parting_score=0.0, footprint_grid=None,
-                 footprint_field=None, footprint_mask=None):
+                 footprint_field=None, footprint_mask=None, shell_notes=()):
         self.coords_mm = coords_mm
         self.indices = indices
         self.length = length
@@ -68,6 +69,7 @@ class OrientedLure:
         self.axes = axes
         self.center_mm = center_mm
         self.repaired_faces = repaired_faces
+        self.shell_notes = tuple(shell_notes)
         self.volume_mm3 = volume_mm3
         self.suggested_parting_mm = suggested_parting_mm
         self.parting_score = parting_score
@@ -215,6 +217,14 @@ def analyze(mesh_body):
             )
         indices, repaired = mesh_repair.make_consistent(world_mm, indices)
 
+    # A downloaded model is often more than the shape you can see. Anything
+    # left in is subtracted from the block along with the lure, so a speck of
+    # debris carves a phantom pocket in a wall and a blob buried in the head
+    # carves a void the plastic can never reach. Dropped before the volume is
+    # measured, so the number describes the shape that will actually be cut.
+    world_mm, indices, dropped = mesh_audit.keep_usable_shells(world_mm, indices)
+    shell_notes = _describe_dropped(dropped)
+
     volume_mm3 = mesh_repair.volume(world_mm, indices)
     if volume_mm3 <= 0.0:
         raise LureError(
@@ -254,6 +264,43 @@ def analyze(mesh_body):
         footprint_grid=grid,
         footprint_field=field,
         footprint_mask=footprint,
+        shell_notes=shell_notes,
+    )
+
+
+def _describe_dropped(dropped):
+    """Say what was thrown out of the mesh, and why it would have hurt."""
+    if not dropped:
+        return ()
+
+    wording = {
+        "tiny": (
+            "%d stray speck%s far too small to be part of the lure - each one "
+            "would have cut a pocket of its own somewhere in the block"
+        ),
+        "buried": (
+            "%d piece%s buried inside the shape - separately modelled eyes, an "
+            "interior armature, that sort of thing. Each would have cut a "
+            "pocket the plastic cannot reach and the bait cannot come out of"
+        ),
+        "void": (
+            "%d sealed pocket%s inside the mesh, with no way in or out"
+        ),
+    }
+
+    counts = {}
+    for item in dropped:
+        counts[item.reason] = counts.get(item.reason, 0) + 1
+
+    parts = []
+    for reason in ("tiny", "buried", "void"):
+        found = counts.get(reason)
+        if found:
+            parts.append(wording[reason] % (found, "" if found == 1 else "s"))
+
+    return (
+        "This mesh is in more than one piece. Ignored: %s. The lure itself is "
+        "untouched - this only affects what gets cut." % "; ".join(parts),
     )
 
 

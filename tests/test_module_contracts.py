@@ -113,8 +113,8 @@ class TestPureModulesStayPure(unittest.TestCase):
 class TestBuildStepOrder(unittest.TestCase):
     """Some build steps are order-dependent in ways types cannot express."""
 
-    def source(self):
-        with open(os.path.join(PACKAGE, "mold_builder.py"), encoding="utf-8") as f:
+    def source(self, name="mold_builder.py"):
+        with open(os.path.join(PACKAGE, name), encoding="utf-8") as f:
             return f.read()
 
     def test_halves_are_laid_out_before_they_are_merged(self):
@@ -149,6 +149,30 @@ class TestBuildStepOrder(unittest.TestCase):
         self.assertLess(
             text.index("warnings += apply_relief"),
             text.index("--- alignment pegs"),
+        )
+
+    def test_loose_pieces_are_swept_before_the_halves_are_merged(self):
+        """Merging replaces two bodies with one body holding two pieces.
+
+        Run the sweep after that and the smaller half IS the loose piece, so
+        it gets cut away and the mold comes out as one half.
+        """
+        text = self.source()
+        self.assertLess(
+            text.index("sweep_islands(component, bottom"),
+            text.index("lay the halves out flat"),
+        )
+        self.assertLess(
+            text.index("sweep_islands(component, top"),
+            text.index("MergeMeshCombineType"),
+        )
+
+    def test_stray_shells_go_before_the_volume_is_measured(self):
+        # Otherwise the reported volume includes debris that never gets cut.
+        text = self.source("lure_analysis.py")
+        self.assertLess(
+            text.index("mesh_audit.keep_usable_shells"),
+            text.index("volume_mm3 = mesh_repair.volume"),
         )
 
     def test_the_component_exists_before_preparation_needs_it(self):

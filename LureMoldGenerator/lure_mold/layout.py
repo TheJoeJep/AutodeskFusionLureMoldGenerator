@@ -91,6 +91,10 @@ class MoldSettings:
     auto_repair: bool = True
     reduce_faces: bool = True
     target_faces: int = 25000
+    # Cut away any lump the booleans leave joined to nothing. Off only as an
+    # escape hatch: a loose piece is never wanted, it just rattles around in
+    # the cavity, but seeing one is sometimes how you diagnose the cause.
+    remove_islands: bool = True
     # Merge the two halves into a single body so the mold exports as one
     # piece. They are laid out flat first, so the result is still both halves
     # side by side, just as a single body.

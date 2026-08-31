@@ -45,18 +45,21 @@ LureMoldGenerator/
     ├── parting.py                PURE MATH — where to split, by ray casting
     ├── relief.py                 PURE MATH — shape-following face relief
     ├── mesh_repair.py            PURE MATH — winding repair, non-manifold detection
+    ├── mesh_audit.py             PURE MATH — separate pieces, pockets, loose islands
     ├── lure_analysis.py          validate, orient, detect nose, find undercuts
     ├── mesh_prep.py              Fusion's own repair and reduce, on a copy
     ├── mold_builder.py           builds the mold in Fusion
     ├── preview.py                CustomGraphics live overlay
     ├── store.py                  settings persisted on the lure body
     └── ui_command.py             command definition and event handlers
-tests/                            237 tests, stdlib unittest, no pytest,
+tests/                            263 tests, stdlib unittest, no pytest,
 ├── test_layout.py                all run OUTSIDE Fusion
 ├── test_meshgen.py
 ├── test_orient.py
 ├── test_parting.py
 ├── test_mesh_repair.py
+├── test_mesh_audit.py
+├── test_relief.py
 └── test_module_contracts.py
 ```
 
@@ -308,6 +311,43 @@ again would move them out from under the user.
 `manual` with an empty list vents nothing, and says so: silently producing a
 mold with no vents at all would be the worst of the available behaviours.
 
+### 6.5.3 Auditing the mesh, going in and coming out
+
+*Added during implementation.* Two problems with one piece of machinery, in
+`mesh_audit.py`: which parts of a triangle soup are actually attached to which.
+
+**Going in.** A downloaded model is often more than the shape you can see, and
+everything in it is subtracted from the block. The mesh is split into connected
+pieces -- vertices welded first, or two pieces sharing a face but not their
+numbering look separate -- and three kinds are dropped: specks under 1% of the
+main shape, pieces buried inside another (found by ray cast, not bounding box:
+a cone's bounding box corners are empty space), and sealed pockets, which show
+up as a shell with negative signed volume. A lure genuinely can be two pieces,
+so nothing else goes, and it never returns nothing.
+
+Dropping shells means dropping their **coordinates**, not only their triangles.
+`orient`, the extents, `_frame_center` and `_detect_nose` all measure a mesh by
+walking its coordinate array, so leaving orphaned vertices in place made a real
+85mm lure measure 138mm long. `keep_usable_shells` therefore returns compacted
+coordinates alongside the indices, so the mistake cannot be made by a caller.
+
+**Coming out.** A mold half should be one solid lump. Anything else is either a
+chunk joined to nothing -- which prints as a lump rattling in the cavity -- or
+a sealed pocket. Islands are cut away using their own surface as the tool body:
+a connected piece of a closed mesh is itself closed, so it is a valid tool, and
+it is inflated 0.2% first so the boolean is not asked to decide a coincident
+face. Sealed pockets are reported but not touched, since filling one in would
+change the shape the user asked for.
+
+That sweep **must** run before the halves are merged. A merged body is two
+pieces by definition and the smaller half is the island; a source-order test
+asserts it. It costs 0.17s on a 75,000 triangle half.
+
+Last, the volume that disappeared is compared with what the cavities should
+account for. Relief, channels and peg holes all remove more, so it is a floor
+rather than an estimate -- but a boolean that quietly did nothing fails it, and
+that is the failure mode with no other symptom.
+
 ### 6.6 Where the mold splits
 
 The parting plane was originally fixed at the middle of the lure's bounding
@@ -556,7 +596,7 @@ Every failure produces a specific, actionable message. No silent failures, no ge
 
 ## 10. Testing
 
-**237 tests, stdlib `unittest`, no dependencies, all outside Fusion.**
+**263 tests, stdlib `unittest`, no dependencies, all outside Fusion.**
 
 | File | Covers |
 |---|---|
@@ -566,6 +606,7 @@ Every failure produces a specific, actionable message. No silent failures, no ge
 | `test_parting.py` | ray casting, span detection, split scoring |
 | `test_mesh_repair.py` | winding repair, volume, non-manifold detection |
 | `test_relief.py` | grid, marking, distance fields, pocket detection, ramp profile, cutter mesh |
+| `test_mesh_audit.py` | connected pieces, welding, sealed pockets, nesting, loose islands |
 | `test_module_contracts.py` | Fusion-side modules match the dataclasses; pure modules stay pure |
 
 Two habits earned their keep. **Watertightness is asserted by directed-edge

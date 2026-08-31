@@ -107,6 +107,7 @@ rather keep them separate to hide one and inspect the other.
 | Mesh preparation | Repair the mesh first | on |
 | Mesh preparation | Reduce the triangle count | on |
 | Mesh preparation | Triangle limit | 25,000 |
+| Mesh preparation | Remove loose pieces from the mold | on |
 | Parting plane | Find the best split automatically | on |
 | Parting plane | Split offset from centre | auto-filled |
 | Parting face relief | Recess the face away from features | on |
@@ -200,6 +201,36 @@ channel lying on that plane comes anywhere near the air caught in the tip. The
 riser leaves a hole to clear out after printing, which is the price of reaching
 the trap at all.
 
+### What gets checked
+
+A downloaded model is often more than the shape you can see, and every extra
+piece gets subtracted from the block along with the lure. Before anything is
+cut, the mesh is broken into its connected pieces and three kinds are thrown
+out:
+
+- **specks** under 1% of the main shape -- debris left by somebody else's
+  boolean. Each would have cut a pocket of its own somewhere in a wall.
+- **pieces buried inside the shape** -- separately modelled eyes, an interior
+  armature. Each would cut a pocket the plastic cannot reach and the bait
+  cannot come out of.
+- **sealed pockets**, where the mesh encloses space with no way in or out.
+
+A lure genuinely can be two pieces -- a body and a separate tail -- so nothing
+else goes, and you are told exactly what was ignored. Your own body is never
+modified; this only affects what gets cut.
+
+Afterwards the finished halves are checked too. A mold half should be one solid
+lump; a chunk left joined to nothing prints as a lump rattling around in the
+cavity. Those are **cut away automatically** using their own surface as the
+tool, and reported with their size. Sealed pockets in a half are reported but
+not touched -- they usually mean part of the lure sits entirely on one side of
+the split, and the fix is a different parting offset.
+
+Finally, the volume that actually disappeared is compared against what the
+cavities should account for. A mesh boolean against a bad mesh does not fail --
+it returns corrupt geometry, and has been measured leaving a block of known
+volume reporting zero -- so this catches the whole class for almost nothing.
+
 ### Parting face relief
 
 The two halves only need to seal against each other *near* the cavity and the
@@ -292,6 +323,7 @@ LureMoldGenerator/
   LureMoldGenerator.manifest
   lure_mold/
     layout.py                  block, cavity, peg, sprue, vent, runner positions
+    mesh_audit.py              separate pieces, sealed pockets, loose islands
     meshgen.py                 watertight box / cylinder / cone primitives
     orient.py                  principal axes via area-weighted PCA
     parting.py                 where to split, by ray casting
@@ -327,7 +359,7 @@ dataclass fields. That catches renames, which is how a stale
 python -m unittest discover -s tests -v
 ```
 
-237 tests, no dependencies beyond the standard library.
+263 tests, no dependencies beyond the standard library.
 
 | File | Covers |
 |---|---|

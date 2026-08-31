@@ -20,6 +20,7 @@ import adsk.fusion
 
 from . import layout as layout_mod
 from . import lure_analysis
+from . import mesh_audit
 from . import mesh_prep
 from . import meshgen
 from . import relief
@@ -37,6 +38,15 @@ ROUND_SEGMENTS = 48
 CUT = adsk.fusion.MeshCombineOperationTypes.CutMeshCombineType
 PEG_HOLE_RELIEF = 0.5  # mm of extra hole depth, per spec 6.2.1
 SPRUE_BREAKOUT = 1.0  # mm the edge channel starts outside the block face
+# More loose pieces than this and the boolean has gone wrong, not the shape.
+# Cutting them one by one would take longer than saying so.
+ISLAND_LIMIT = 20
+# Below this share of the lure's own volume, the cavity cannot have been cut.
+CAVITY_VOLUME_FLOOR = 0.5
+# An island is cut away using its own surface as the tool, which would leave
+# the boolean deciding a coincident face. Nudge it outwards first: the lump is
+# surrounded by empty space by definition, so over-cutting hurts nothing.
+ISLAND_INFLATE = 1.002
 # What a mold gets renamed to once we have given up on deleting it.
 RETIRED_SUFFIX = " (old - delete me)"
 
@@ -121,7 +131,9 @@ def is_generated_body(name):
     return (
         name in (BOTTOM_NAME, TOP_NAME)
         or name.startswith(COMPONENT_NAME)
-        or name.startswith(("peg_", "sprue_", "vent_", "cavity_", "runner"))
+        or name.startswith(
+            ("peg_", "sprue_", "vent_", "cavity_", "runner", "island_")
+        )
     )
 
 
@@ -383,6 +395,128 @@ def apply_relief(component, plan, settings, lure_coords, lure_indices):
     return notes
 
 
+def sweep_islands(component, half, tag, settings, notes):
+    """Cut away anything in a finished half that is joined to nothing.
+
+    A mold half should be one solid lump. A chunk that ends up attached to
+    nothing prints as a loose piece rattling around in the cavity, and is also
+    a good sign a boolean went wrong, so it is worth catching either way.
+
+    A connected piece of a closed mesh is itself closed, so the lump's own
+    surface makes a perfectly good tool body: cutting with it removes exactly
+    that lump and nothing else. All of them go in one boolean.
+
+    MUST run before the halves are merged. After the merge the two halves are
+    one body with two pieces in it, and the smaller half is the loose piece.
+    """
+    if half is None or not getattr(settings, "remove_islands", True):
+        return half
+
+    try:
+        mesh = half.mesh
+        coords_mm = [c / MM for c in mesh.nodeCoordinatesAsDouble]
+        indices = list(mesh.triangleNodeIndices)
+        islands, voids = mesh_audit.loose_pieces(coords_mm, indices)
+    except Exception:
+        return half
+
+    if voids:
+        notes.append(
+            "The %s half has %d sealed pocket%s inside it, with no way in or "
+            "out. That usually means part of the lure sits entirely on one "
+            "side of the split - try a different parting offset."
+            % (tag, len(voids), "" if len(voids) == 1 else "s")
+        )
+
+    if not islands:
+        return half
+
+    if len(islands) > ISLAND_LIMIT:
+        notes.append(
+            "The %s half came out in %d separate pieces. That is a failed "
+            "boolean rather than a stray lump, so nothing has been removed - "
+            "check the lure mesh with Mesh > Prepare > Repair."
+            % (tag, len(islands) + 1)
+        )
+        return half
+
+    tools = []
+    for n, island in enumerate(islands):
+        piece_coords, piece_indices = mesh_audit.extract(
+            coords_mm, indices, island
+        )
+        cx, cy, cz = island.center
+        piece_coords = meshgen.translate(
+            meshgen.scale(
+                meshgen.translate(piece_coords, -cx, -cy, -cz), ISLAND_INFLATE
+            ),
+            cx, cy, cz,
+        )
+        tools.append(
+            _add_mesh(
+                component, piece_coords, piece_indices, "island_%s_%d" % (tag, n)
+            )
+        )
+
+    removed = sum(island.volume for island in islands)
+    notes.append(
+        "Removed %d loose piece%s from the %s half (%.1f mm3 in total) - they "
+        "were joined to nothing and would have printed as rattling lumps."
+        % (len(islands), "" if len(islands) == 1 else "s", tag, removed)
+    )
+    return _combine(component, half, tools, CUT, keep_tools=False)
+
+
+def _half_volume_mm3(half):
+    """A half's volume in mm3, or None if Fusion will not say."""
+    try:
+        return half.volume * 1000.0  # cm3 -> mm3
+    except Exception:
+        return None
+
+
+def check_cavities_were_cut(plan, lure_volume_mm3, bottom, top):
+    """Sanity-check that the cavity actually came out of the block.
+
+    A mesh boolean against a bad mesh does not fail - it returns corrupt
+    geometry, and has been measured leaving a block of known volume reporting
+    0.0. Comparing what disappeared against what should have is cheap, and
+    catches the whole class.
+    """
+    notes = []
+    expected = lure_volume_mm3 * len(plan.cavities)
+    if expected <= 0:
+        return notes
+
+    removed = 0.0
+    for half, thickness in ((bottom, plan.bottom_thickness), (top, plan.top_thickness)):
+        measured = _half_volume_mm3(half)
+        if measured is None:
+            return notes
+        block = plan.block_x * plan.block_y * thickness
+        if measured <= 0.0:
+            notes.append(
+                "A mold half came out with no volume at all. The boolean "
+                "failed silently - run Mesh > Prepare > Repair on the lure."
+            )
+            return notes
+        removed += block - measured
+
+    # Relief, channels and peg holes all remove more on top of the cavity, so
+    # this is a floor and not an estimate.
+    if removed < CAVITY_VOLUME_FLOOR * expected:
+        notes.append(
+            "Only %s mm3 was cut out of the block, where the %d cavit%s alone "
+            "should account for about %s mm3. The lure may not have been cut "
+            "properly - check it with Mesh > Prepare > Repair."
+            % (
+                f"{removed:,.0f}", len(plan.cavities),
+                "y" if len(plan.cavities) == 1 else "ies", f"{expected:,.0f}",
+            )
+        )
+    return notes
+
+
 def build(design, lure_body, settings):
     """Generate both mold halves. Returns a BuildResult."""
     # The component is made first so mesh preparation has somewhere to put its
@@ -416,7 +550,10 @@ def build(design, lure_body, settings):
         cavity_distance=scaled_footprint(lure, length),
         vent_points=scaled_vent_points(lure, settings, length),
     )
-    warnings = setup_notes + list(prep_notes) + list(plan.warnings)
+    warnings = (
+        setup_notes + list(prep_notes) + list(lure.shell_notes)
+        + list(plan.warnings)
+    )
 
     slow = mesh_prep.slow_build_warning(
         len(lure.indices) // 3, len(plan.cavities)
@@ -627,6 +764,16 @@ def build(design, lure_body, settings):
         _find_by_name(component, "cavity_%d" % n) for n in range(len(plan.cavities))
     ]
     top = _combine(component, top, instances, cut, keep_tools=False)
+
+    # --- check what actually came out ------------------------------------
+    # Before the halves are laid out or merged: a merged body is two pieces by
+    # definition, and the island sweep would take the smaller half for a lump.
+    bottom = sweep_islands(component, bottom, "bottom", settings, warnings)
+    top = sweep_islands(component, top, "top", settings, warnings)
+    scale_factor = length / lure.length if lure.length > 0 else 1.0
+    warnings += check_cavities_were_cut(
+        plan, lure.volume_mm3 * scale_factor ** 3, bottom, top
+    )
 
     mesh_prep.tidy_up(component)
 

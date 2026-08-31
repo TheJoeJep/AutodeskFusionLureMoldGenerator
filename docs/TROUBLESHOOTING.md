@@ -197,6 +197,49 @@ Ramp length is `1.5 x depth / tan(angle)`: 2.52 mm at the 50 degree default
 with a 2 mm recess. See the entry above for why it is not simply
 `depth / tan(angle)`.
 
+### "This mesh is in more than one piece"
+
+Not an error. Downloaded models routinely carry more than the shape you can
+see, and anything left in gets subtracted from the block along with the lure.
+Three kinds are ignored: specks under 1% of the main shape, pieces buried
+inside it, and sealed pockets. The message says how many of each.
+
+A lure really can be two pieces -- a body and a separate tail -- and those are
+kept. If something you wanted was ignored, it was either tiny or entirely
+inside the shape; check the model in the Mesh workspace.
+
+Your own body is never modified. This only affects what gets cut.
+
+### "Removed N loose pieces from the ... half"
+
+A chunk of the block ended up joined to nothing. It would have printed as a
+lump rattling around in the cavity, so it was cut away and you were told.
+
+One or two small ones usually mean the cavity came close to isolating a corner
+-- more margin fixes it. Many, or a large one, usually means the lure mesh is
+bad; run Mesh > Prepare > Repair on it. If more than 20 turn up, nothing is
+removed at all, because that is a failed boolean rather than a stray lump.
+
+To see one in place while diagnosing it, turn off **Remove loose pieces from
+the mold** under Mesh preparation.
+
+### "N sealed pockets inside it, with no way in or out"
+
+Part of the lure is enclosed in one half with no opening. The plastic cannot
+get in and the bait cannot come out. Almost always the split is in the wrong
+place -- try a different parting offset, or turn the automatic one back on.
+
+Unlike loose pieces this is not fixed automatically, because filling it in
+would change the shape you asked for.
+
+### "Only N mm3 was cut out of the block"
+
+The cavity volume that disappeared is much less than the lure should account
+for, which means a boolean quietly did nothing or did the wrong thing. A mesh
+boolean against a bad mesh does not fail -- it returns corrupt geometry.
+
+Run Mesh > Prepare > Repair on the lure and try again.
+
 ### Fewer pegs than I asked for, or none at all
 
 Every candidate position is rejected if it collides with a cavity, a sprue, a

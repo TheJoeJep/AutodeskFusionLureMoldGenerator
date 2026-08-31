@@ -81,6 +81,7 @@ lure_mold/
   parting.py        PURE  where to split, by ray casting
   relief.py         PURE  shape-following parting-face relief
   mesh_repair.py    PURE  winding repair, non-manifold detection
+  mesh_audit.py     PURE  separate pieces, sealed pockets, loose islands
   lure_analysis.py        validate, orient, detect nose, undercuts   [imports adsk]
   mesh_prep.py            Fusion's repair and reduce, on a copy      [imports adsk]
   mold_builder.py         builds the mold                            [imports adsk]
@@ -89,7 +90,7 @@ lure_mold/
   store.py                settings on the lure body                  [imports adsk]
 ```
 
-**The six PURE modules must never import `adsk`.** All the fiddly geometry
+**The seven PURE modules must never import `adsk`.** All the fiddly geometry
 lives there so it can be tested with plain Python and no CAD. A test enforces
 this. Put new geometry logic there, not in the builder.
 
@@ -105,7 +106,7 @@ order-dependent build steps. Extend it when you add a step whose order matters.
 ## Working on it
 
 ```bash
-python -m unittest discover -s tests -v          # 237 tests, stdlib only
+python -m unittest discover -s tests -v          # 263 tests, stdlib only
 powershell -ExecutionPolicy Bypass -File .\sync-addin.ps1
 ```
 
@@ -169,6 +170,14 @@ cutter's cap is a flat rectangle; copying the grid onto it doubled the body for
 nothing and took a build from 40s to over two minutes. It is a fan from the
 centre now. Before making a cutter finer, work out what it does to the
 triangle count, and remember only its shaped face needs the resolution.
+
+**Trimming triangles is not enough; compact the coordinates too.** Dropping a
+stray shell from the index list leaves its vertices in the coordinate array,
+and everything that measures a mesh by walking its coordinates -- `orient`,
+the extents, `_frame_center`, `_detect_nose` -- still sees them. A speck 120mm
+off the tail made a real 85mm lure measure 138mm. `mesh_audit.keep_usable_shells`
+returns coordinates as well as indices for exactly this reason; do not hand its
+indices back alongside the originals.
 
 Picking features off a field, use **prominence**, not a height cutoff. A ridge
 produces a chain of local maxima that a cutoff cannot tell from a real peak,

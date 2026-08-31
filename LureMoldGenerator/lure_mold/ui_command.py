@@ -125,6 +125,7 @@ def _read_settings(inputs):
         auto_repair=inputs.itemById("autoRepair").value,
         reduce_faces=inputs.itemById("reduceFaces").value,
         target_faces=inputs.itemById("targetFaces").value,
+        remove_islands=inputs.itemById("removeIslands").value,
         combine_halves=inputs.itemById("combineHalves").value,
         relief_enabled=inputs.itemById("reliefEnabled").value,
         relief_land=_mm(inputs.itemById("reliefLand")),
@@ -547,6 +548,7 @@ def _apply_settings(inputs, settings):
     inputs.itemById("autoRepair").value = settings.auto_repair
     inputs.itemById("reduceFaces").value = settings.reduce_faces
     inputs.itemById("targetFaces").value = settings.target_faces
+    inputs.itemById("removeIslands").value = settings.remove_islands
     inputs.itemById("combineHalves").value = settings.combine_halves
     inputs.itemById("reliefEnabled").value = settings.relief_enabled
     inputs.itemById("reliefLand").value = settings.relief_land * MM
@@ -709,6 +711,15 @@ class _CreatedHandler(adsk.core.CommandCreatedEventHandler):
             prep_group.addIntegerSpinnerCommandInput(
                 "targetFaces", "Triangle limit", 500, 500000, 2500,
                 defaults.target_faces,
+            )
+            islands = prep_group.addBoolValueInput(
+                "removeIslands", "Remove loose pieces from the mold", True, "",
+                defaults.remove_islands,
+            )
+            islands.tooltip = (
+                "A chunk of the block left joined to nothing prints as a lump "
+                "rattling around in the cavity. Turn this off only to see one "
+                "in place while working out what caused it."
             )
 
             relief_group = inputs.addGroupCommandInput(
