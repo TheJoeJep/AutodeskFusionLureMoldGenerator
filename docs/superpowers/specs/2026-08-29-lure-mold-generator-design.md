@@ -51,7 +51,7 @@ LureMoldGenerator/
     ├── preview.py                CustomGraphics live overlay
     ├── store.py                  settings persisted on the lure body
     └── ui_command.py             command definition and event handlers
-tests/                            216 tests, stdlib unittest, no pytest,
+tests/                            237 tests, stdlib unittest, no pytest,
 ├── test_layout.py                all run OUTSIDE Fusion
 ├── test_meshgen.py
 ├── test_orient.py
@@ -243,6 +243,13 @@ cleaned; a riser is a blind hole full of set plastic.
 The injection mode governs the *sprue*, not the vent -- vents lie on the
 parting line even with top injection.
 
+*Added during implementation.* `vent_direction` can force every vent to the
+riser form instead. That is not a fallback but the only thing that works for a
+trap sitting well above the split -- **the curl of a curly-tail worm** is the
+case that demanded it, where no channel lying on the parting plane comes
+anywhere near the air caught in the tip. Asked for deliberately it is not
+reported as being boxed in.
+
 ### 6.5.1 One vent per trapped pocket
 
 *Changed during implementation.* Each cavity used to get a single vent at the
@@ -283,6 +290,23 @@ The separation is deliberately small: at 0.12 the two feet of a real figure sat
 
 Each vent routes to the nearest block face it can reach; `Cavity.vents` is a
 list, with `vent`/`vent_entry` kept as properties for the primary one.
+
+### 6.5.2 Overriding the detection
+
+Detection is good, not omniscient, so `vent_placement` takes the detected
+points (`auto`), keeps them and appends the user's (`add`), or uses the user's
+alone (`manual`). `manual_vents` holds those as (x, y) in millimetres from the
+cavity centre, in the lure's own frame, and they go through the same rotation
+as the detected ones so a cavity turned to face a central runner mirrors them
+correctly.
+
+They are deliberately **not** rescaled by the finished length. The detected
+points already are, and the dialog seeds the table with them, so both are in
+the same finished-size space the preview draws -- rescaling the typed ones
+again would move them out from under the user.
+
+`manual` with an empty list vents nothing, and says so: silently producing a
+mold with no vents at all would be the worst of the available behaviours.
 
 ### 6.6 Where the mold splits
 
@@ -355,10 +379,17 @@ the slope began nowhere near the shape.
 
 It is now a **height field**, in `relief.py`. Every feature is rasterised onto
 a grid -- cavities by their true projected silhouette, channels and pegs
-analytically -- a distance field is swept out from them with a two-pass chamfer
-transform, and the face height at each node follows from that distance: flat
-within the land, then ramping down over `relief_run(depth, angle) =
-depth / tan(angle)` to the recess depth.
+analytically -- a distance field is swept out from them, and the face height at
+each node follows from that distance: flat within the land, then easing down
+over `relief_run(depth, angle) = 1.5 x depth / tan(angle)` to the recess depth.
+
+The ease is a **smoothstep**, not a straight ramp. A straight ramp turns a
+corner where it leaves the land and another where it meets the floor, and a
+corner sampled on a grid can only zig-zag along it from one node to the next.
+Rounding both ends removes the creases, and a slope with no abrupt change of
+angle suits a slicer better too. The 1.5 factor is a smoothstep's peak slope
+over its average, so the angle asked for remains the angle of the *steepest*
+part.
 
 The cutter is the solid bounded by that surface and a cap well clear of it, so
 it is subtracted from a plain block half and nothing ever has zero thickness.
@@ -366,15 +397,44 @@ It is built for the bottom half and mirrored for the top, because deriving one
 winding and reflecting it is far less error-prone than keeping two consistent
 by hand.
 
-The distance transform is an **exact** Euclidean one (Felzenszwalb and
-Huttenlocher's parabola-envelope method), not the chamfer sweep used at first.
-A chamfer measures diagonals badly -- distance varied by 1.04mm around a circle
--- which gave the contours an octagonal bias and put visible ridges down the
-slope. Exact is barely slower and the ramp comes out smooth.
+**Distance is measured to the features, not to the grid.** This took two
+goes to get right, and the first fix was not enough.
 
-Cell size is the ramp width over three, clamped to 0.35-1.20mm, with a hard
-ceiling on node count. On a real mold that took the finished body from ~32k to
-~96k triangles -- the price of a land that actually follows the shape.
+The transform was originally a two-pass chamfer sweep, which measures diagonals
+badly: distance varied by 1.04mm around a circle, giving the contours an
+octagonal bias. That was replaced with an exact Euclidean transform
+(Felzenszwalb and Huttenlocher's parabola-envelope method), which removed the
+octagon -- but the slopes were still corrugated, because *exactness was never
+the problem*. Both versions measure distance to the nearest marked **node**,
+and the marked node closest to the true outline sits anywhere from zero to a
+full cell inside it. Which one wins changes as the boundary weaves between
+nodes, so the error is not an offset but a ripple of nearly a whole cell: on a
+real mold, 1.1mm across a 3.4mm ramp, a third of its depth. Supersampling does
+not rescue that -- the ripple falls off only linearly with the cell.
+
+`relief.Nearest` records instead where each feature's closest point actually
+is, to floating point, for nodes within two cells; Danielsson's two sweeps then
+carry those points out across the grid. Ripple on a test ring falls from 0.42mm
+to under 0.005mm. The node version is kept and is still what `silhouette_field`
+uses, because peg placement only asks whether a spot is roughly clear.
+
+The same change fixed a second fault with the same root. A vent's land is
+marked as a rectangle a millimetre tall; on a 1.12mm grid it could fall between
+two rows of nodes and mark **nothing**, so the relief kept no land along that
+vent, the recess dropped the face by the full depth, and the channel -- which
+sits on the parting plane -- was left cutting air partway to the block face. It
+was roughly a coin flip per vent: three of four were lucky. `mark_rect` and
+`mark_disc` now also guarantee at least one node when used without a `Nearest`.
+
+Cell size is the ramp width over seven, clamped to 0.35-1.00mm, under a node
+ceiling of 45,000.
+
+**Only the cutter's shaped face needs resolution.** Its cap is a flat
+rectangle, and copying the grid onto it doubled a body that the two largest
+mesh booleans have to chew through -- 34,216 triangles where a fan from the
+centre needs 558. Reinstating that mistake took a build from 50 seconds to over
+two minutes, so a test asserts everything above the relief surface stays nearly
+free.
 
 **Ordering matters:** relief runs on the plain block halves, before the pegs,
 ports and cavities go in. The cutter removes everything above its surface, so
@@ -440,14 +500,19 @@ Native `CommandInputs` — chosen over an HTML palette for unit-aware value inpu
 | Pegs | Peg diameter | value (mm) | 5.0 |
 | Pegs | Peg height | value (mm) | 5.0 |
 | Pegs | Peg clearance | value (mm) | 0.2 |
+| Pegs | Lead-in chamfer | value (mm) | 0.6 |
+| Injection | Injection port | dropdown | Edge |
 | Injection | Sprue diameter | value (mm) | 4.0 |
 | Injection | Funnel diameter | value (mm) | 8.0 |
-| Injection | Vents | bool | on |
 | Injection | Runner diameter | value (mm) | 6.0 |
+| Injection | Add vents | bool | on |
+| Injection | Vent diameter | value (mm) | 1.0 |
+| Vent placement | Positions | dropdown | Automatic |
+| Vent placement | Direction | dropdown | Along the parting line |
+| Vent placement | My vent points | table (X/Y mm) + Add / Remove / Reset | empty |
 | Mesh preparation | Repair the mesh first | bool | on |
 | Mesh preparation | Reduce the triangle count | bool | on |
 | Mesh preparation | Triangle limit | integer spinner | 25000 |
-| Injection | Vent diameter | value (mm) | 1.0 |
 | Parting plane | Find the best split automatically | bool | on |
 | Parting plane | Split offset from centre | value (mm) | auto-filled |
 | Parting face relief | Recess the face away from features | bool | on |
@@ -459,6 +524,13 @@ Native `CommandInputs` — chosen over an HTML palette for unit-aware value inpu
 | — | Result readout | text box (read-only) | live |
 
 Readout format: `Mold: 124.0 x 86.0 x 31.0 mm — 6 cavities`
+
+The vent table is greyed out unless the placement actually uses it, and
+switching to `manual` on an empty table seeds it with the detected points, so
+the user starts by editing real numbers rather than from a blank sheet. Its
+first row is a header of read-only strings; nothing counts that row out
+explicitly, because the readers cast each cell to a `ValueCommandInput` and a
+header simply does not cast.
 
 ## 9. Error handling
 
@@ -484,7 +556,7 @@ Every failure produces a specific, actionable message. No silent failures, no ge
 
 ## 10. Testing
 
-**216 tests, stdlib `unittest`, no dependencies, all outside Fusion.**
+**237 tests, stdlib `unittest`, no dependencies, all outside Fusion.**
 
 | File | Covers |
 |---|---|
@@ -493,6 +565,7 @@ Every failure produces a specific, actionable message. No silent failures, no ge
 | `test_orient.py` | principal axes, extents, projection |
 | `test_parting.py` | ray casting, span detection, split scoring |
 | `test_mesh_repair.py` | winding repair, volume, non-manifold detection |
+| `test_relief.py` | grid, marking, distance fields, pocket detection, ramp profile, cutter mesh |
 | `test_module_contracts.py` | Fusion-side modules match the dataclasses; pure modules stay pure |
 
 Two habits earned their keep. **Watertightness is asserted by directed-edge
@@ -501,6 +574,11 @@ once, which catches holes, duplicated faces and flipped winding in one check.
 And **a guard test is re-run against deliberately broken code** to prove it is
 not vacuous - done for the module-contract test by reintroducing the exact
 rename it was written to catch.
+
+Where a fix is a *measurement* rather than a behaviour, the old measurement is
+kept as a test of its own. `test_measuring_to_nodes_ripples_by_most_of_a_cell`
+asserts the node-distance version still ripples; if that ever stops being true,
+the test asserting the exact version does not is no longer proving anything.
 
 **Geometry is validated in live Fusion through the MCP connection.** Generate,
 then assert on body count, per-body volume, `isClosed` on both halves, and that
@@ -538,7 +616,7 @@ Confirmed present in the running Fusion 2704.1.53:
 
 `MeshBodies.add` / `addByTriangleMeshData` · `MeshBody.boundingBox` · `orientedMinimumBoundingBox` · `isClosed` · `isOriented` · `volume` · `calculateCollisionsWithRay` · `MeshRepairFeatures` · `MeshReduceFeatures` · `MeshCombineFeatures` (`CutMeshCombineType`, `EnhancedMeshCombineAlgorithmType`) · `MeshPlaneCutFeatures` · `MeshConvertFeatures` · `TessellateFeatures` · `CombineFeatures` · `SplitBodyFeatures` · `ScaleFeatures` · `ExtrudeFeatures` · `HoleFeatures` · `RevolveFeatures` · `RectangularPatternFeatures` · `Command.executePreview` / `inputChanged` / `validateInputs` · `Component.customGraphicsGroups` · `CustomGraphicsBRepBody` / `Lines` / `Text` · `Design.attributes` / `MeshBody.attributes` · `CommandInputs.addValueInput` / `addIntegerSpinnerCommandInput` / `addSelectionInput` / `addBoolValueInput` / `addTextBoxCommandInput` / `addGroupCommandInput` / `addTabCommandInput`
 
-Added since: `MeshRepairFeatures` (`OneTouchFixMeshRepairType`) - `MeshReduceFeatures` (`FaceCountMeshReduceTargetType`, `AdaptiveReduceType`) - `MoveFeatures.createInput2` with `defineAsFreeMove` (works on mesh bodies) - `MeshCombineOperationTypes.MergeMeshCombineType` - `ExportManager.createSTLExportOptions` (accepts a Component, hence one file per component).
+Added since: `CommandInputs.addTableCommandInput` (+ `TableCommandInput.commandInputs` / `addCommandInput` / `addToolbarCommandInput` / `getInputAtPosition` / `deleteRow` / `selectedRow`) - `addDropDownCommandInput` - `addStringValueInput` (`isReadOnly`) - `MeshBody.isLightBulbOn` (settable; `isVisible` is **not**) - `MeshRepairFeatures` (`OneTouchFixMeshRepairType`) - `MeshReduceFeatures` (`FaceCountMeshReduceTargetType`, `AdaptiveReduceType`) - `MoveFeatures.createInput2` with `defineAsFreeMove` (works on mesh bodies) - `MeshCombineOperationTypes.MergeMeshCombineType` - `ExportManager.createSTLExportOptions` (accepts a Component, hence one file per component).
 
 Noted but unused: `MeshConvertFeatures` organic mode requires the paid Product Design Extension. The mesh-output pipeline avoids needing it at all.
 
@@ -551,6 +629,10 @@ Recorded because each cost a failed run, and none is obvious from the docs.
 - **A mesh boolean against a bad mesh does not fail.** It returns corrupt geometry. Cutting a badly-wound body out of a block of known volume 22,277.378 cm3 "succeeded" and left the block reporting volume 0.0.
 - **`orientedMinimumBoundingBox` is approximate** - 17% too large on a rotated test lure, with the wrong axes.
 - **A parametric timeline forbids deleting a body a feature depends on.** `deleteMe()` no-ops. Consume tool bodies instead (`isKeepToolBodies=False`).
+- **A failed `deleteMe()` is not free.** Asking to delete a 50,000-triangle mesh body a feature produced costs about fifteen seconds before it fails. Retrying that over the stale molds in a Part Design document was 89 seconds of a 143 second build. Check `design.designType` and do not ask; never re-ask about a body already given up on.
+- **`MeshBody.isVisible` has no setter** - it raises. Set `isLightBulbOn` instead; `isVisible` then reads back correctly.
+- **`calculateCollisionsWithRay` returns a `Point3DVector`**, a SWIG `std::vector` - no `.count`, no `.length`. Use `list(hits)`. Raycasting a built mold is the most reliable way to verify cut geometry; a screenshot is not evidence.
+- **Mesh booleans re-tessellate.** Large coplanar regions come back as coarse fans, which can read as unexpected geometry in a screenshot and is harmless.
 - **`args.isValidResult = True` in `executePreview` suppresses the execute event entirely.** The OK button appears to do nothing.
 - **A command registered from a script never fires its `commandCreated` handler.** Fusion must load the add-in itself.
 - **Restarting an add-in does not clear `sys.modules`.** Fusion keeps running the first code it loaded; tracebacks then quote new source beside old errors.

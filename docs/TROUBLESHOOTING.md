@@ -193,8 +193,9 @@ default 10 mm margins and a 4 mm land, only a narrow band is left to recess;
 with a land close to the margin, none is. You get a warning when it does not
 fit -- reduce the land, or increase the margins.
 
-Ramp length is `depth / tan(angle)`: 1.68 mm at the 50 degree default with a
-2 mm recess.
+Ramp length is `1.5 x depth / tan(angle)`: 2.52 mm at the 50 degree default
+with a 2 mm recess. See the entry above for why it is not simply
+`depth / tan(angle)`.
 
 ### Fewer pegs than I asked for, or none at all
 
