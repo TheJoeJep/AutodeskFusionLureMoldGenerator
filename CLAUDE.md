@@ -40,7 +40,7 @@ to load the add-in itself. Hours were lost to this; do not repeat it.
 
 ---
 
-## The three traps that will waste your time
+## The traps that will waste your time
 
 **1. Restarting the add-in does not reload the code.** Fusion does not clear
 `sys.modules`, so it keeps executing whatever it imported first no matter how
@@ -60,6 +60,12 @@ and build into a component you can delete wholesale to regenerate. In a **Part
 Design** document Fusion allows only one component, so the add-in falls back to
 the root — and then stale molds accumulate because they cannot be deleted.
 Suggest a normal Design document.
+
+**4. A failed `deleteMe()` is not free.** In a parametric design, asking to
+delete a mesh body a feature produced costs about fifteen seconds and then
+fails. Retrying that on every stale mold in a Part Design document was 89 of a
+143 second build. Check `design.designType` and do not ask, and never re-ask
+about a body already given up on.
 
 More of these in the spec, section 14.
 
@@ -99,7 +105,7 @@ order-dependent build steps. Extend it when you add a step whose order matters.
 ## Working on it
 
 ```bash
-python -m unittest discover -s tests -v          # 216 tests, stdlib only
+python -m unittest discover -s tests -v          # 237 tests, stdlib only
 powershell -ExecutionPolicy Bypass -File .\sync-addin.ps1
 ```
 
@@ -143,6 +149,26 @@ with no pegs at all.
 with the analysis. Use it for anything that asks "is this spot clear?", and
 `relief.geodesic_field()` for anything that asks "how far is this *through* the
 shape" -- that one drives vent placement.
+
+### Two more things that were the wrong tool
+
+**A binary mask cannot measure distance well enough for a ramp.** Distance to
+the nearest marked *node* is quantised by up to a cell, and the error ripples
+as the outline weaves between nodes -- 1.1mm of ripple across a 3.4mm ramp on a
+real mold, which is the corrugation that showed up down every slope.
+Supersampling does not rescue it; the ripple only falls off linearly with the
+cell. Pass a `relief.Nearest` to the `mark_*` functions and to
+`distance_field`: features then record their exact closest point and those get
+carried outwards. It also fixes features thinner than a cell, which could
+otherwise fall between two rows of nodes and mark nothing at all -- that is
+what left one vent with no land around it, swallowed by the recess partway to
+the block face.
+
+**Cost is in the mesh booleans, so count the cutter's triangles.** The relief
+cutter's cap is a flat rectangle; copying the grid onto it doubled the body for
+nothing and took a build from 40s to over two minutes. It is a fan from the
+centre now. Before making a cutter finer, work out what it does to the
+triangle count, and remember only its shaped face needs the resolution.
 
 Picking features off a field, use **prominence**, not a height cutoff. A ridge
 produces a chain of local maxima that a cutoff cannot tell from a real peak,

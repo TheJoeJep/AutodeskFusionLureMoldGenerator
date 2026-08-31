@@ -96,6 +96,21 @@ a single component, so the mold has nowhere to go.
 But use a normal **Design** document (File > New Design) if you want the
 halves grouped for single-file export.
 
+### Builds get slower every time in a Part Design document
+
+Each regenerate leaves the previous mold behind -- see the Part Design entry
+above -- and every one of those is a 50,000+ triangle body the document has to
+carry. Delete the bodies marked "(old - delete me)" in the browser. They are
+hidden and nothing depends on them.
+
+The add-in no longer *asks* to delete them itself: in a parametric design a
+failed `deleteMe()` on a body that size costs about fifteen seconds, and
+retrying on each stale mold was 89 seconds of a 143 second build. It renames
+them and switches them off instead.
+
+Working in a normal Design document avoids all of this, because there the whole
+mold component is deleted and rebuilt each time.
+
 ### The build takes forever or times out
 
 Boolean cost scales with **triangles x cavities**. Measured on a 25,000
@@ -134,6 +149,42 @@ lookups simply returned nothing.
 **Fix:** already fixed -- laying out now happens first, then the optional
 merge. A test asserts that order in the source, since it is not a kind of
 mistake a type checker can catch.
+
+### The slope around the cavity is jagged, ridged or corrugated
+
+Fixed, but worth knowing what it was, because the same trap is easy to fall
+back into. The distance field was measured to the nearest marked *grid node*
+rather than to the feature itself. That is quantised by up to a whole cell, and
+the error ripples as the outline weaves between nodes -- on a real mold, 1.1mm
+of ripple across a 3.4mm ramp. `relief.Nearest` records each feature's exact
+closest point instead.
+
+If you see it again, check that `apply_relief` is still passing its `nearest`
+to every `mark_*` call and to `distance_field`. Without it they silently fall
+back to the node-distance version, which is correct for peg placement and far
+too coarse for a ramp.
+
+### One vent stops partway to the block face
+
+Also fixed. The vent's flat land is marked as a thin rectangle, and a rectangle
+narrower than one grid cell can fall between two rows of nodes and mark
+nothing. The relief then kept no land along that vent, the recess dropped the
+face by the full depth, and the channel -- which sits on the parting plane --
+was left cutting air. With a 1mm vent on a 1.12mm grid it was roughly a coin
+flip per vent.
+
+Exact distances made it moot, and `mark_rect`/`mark_disc` now also guarantee at
+least one node when used without them.
+
+### The relief warns that the land plus ramp does not fit
+
+The ramp eases in and out rather than running straight, so it needs half as
+much room again as a straight wall at the same angle:
+`1.5 x depth / tan(angle)`. A 4mm recess at 50 degrees runs 5.0mm, and with a
+2mm land that wants a 7mm+ wall.
+
+Give it more margin, reduce the depth, or steepen the angle. The mold still
+builds either way -- it just reaches nearly full depth right at the wall.
 
 ### The parting face relief does not seem to do anything
 

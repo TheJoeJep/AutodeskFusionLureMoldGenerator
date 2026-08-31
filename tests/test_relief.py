@@ -134,6 +134,118 @@ class TestDistanceField(unittest.TestCase):
         field = relief.distance_field(grid, mask)
         self.assertGreater(relief.sample(grid, field, 0.0, 0.0), 100.0)
 
+    def test_an_empty_grid_is_still_far_away_with_exact_seeding(self):
+        grid = relief.make_grid(-5, -5, 5, 5, 1.0)
+        mask = relief.new_mask(grid)
+        nearest = relief.Nearest(grid)
+        field = relief.distance_field(grid, mask, nearest)
+        self.assertGreater(relief.sample(grid, field, 0.0, 0.0), 100.0)
+
+
+class TestExactDistance(unittest.TestCase):
+    """Measuring to the features themselves, not to the nodes they cover.
+
+    Distance to the nearest marked *node* is quantised by up to a whole cell,
+    and -- worse than being merely offset -- the error ripples as the outline
+    weaves between nodes. On a real mold that came out as visible corrugation
+    running down every relief slope.
+    """
+
+    def ring(self, nearest_wanted, cell=1.0, radius=2.7, low=5.0, high=12.0):
+        """Error at every node whose true distance falls in a band.
+
+        Measured AT the nodes: relief.sample snaps to the nearest one, so
+        comparing its answer against the true distance at some other point
+        would just be measuring the snap.
+        """
+        grid = relief.make_grid(-20, -20, 20, 20, cell)
+        mask = relief.new_mask(grid)
+        nearest = relief.Nearest(grid) if nearest_wanted else None
+        # Deliberately off-grid, so no node lands on the centre or the rim.
+        relief.mark_disc(grid, mask, 0.13, -0.07, radius, nearest)
+        field = relief.distance_field(grid, mask, nearest)
+
+        errors = []
+        for j in range(grid.ny + 1):
+            for i in range(grid.nx + 1):
+                true = math.hypot(grid.x(i) - 0.13, grid.y(j) + 0.07) - radius
+                if low <= true <= high:
+                    errors.append(field[grid.index(i, j)] - true)
+        return errors
+
+    def test_measuring_to_nodes_ripples_by_most_of_a_cell(self):
+        # The bug, stated as a measurement. If this ever stops being true the
+        # test below is no longer proving anything.
+        errors = self.ring(nearest_wanted=False)
+        self.assertGreater(max(errors) - min(errors), 0.35)
+
+    def test_exact_seeding_removes_the_ripple(self):
+        errors = self.ring(nearest_wanted=True)
+        self.assertLess(max(errors) - min(errors), 0.02)
+        self.assertLess(max(abs(e) for e in errors), 0.02)
+
+    def test_it_stays_exact_far_from_the_feature(self):
+        # Well outside the seeded band, so this is testing the propagation.
+        errors = self.ring(nearest_wanted=True, low=12.0, high=16.0)
+        self.assertLess(max(abs(e) for e in errors), 0.03)
+
+    def test_a_channel_thinner_than_a_cell_is_not_lost(self):
+        # The real failure: a 1mm vent band on a 1.119mm grid fell between two
+        # rows of nodes, marked nothing, and so kept no land around it. The
+        # recess then swallowed the channel partway to the block face.
+        cell = 1.119
+        grid = relief.make_grid(-28.66, -28.66, 28.66, 28.66, cell)
+        mask = relief.new_mask(grid)
+        nearest = relief.Nearest(grid)
+        # Centred between two node rows, exactly as the failing vent was.
+        band_y = grid.y(26) + cell / 2
+        relief.mark_rect(grid, mask, -20.0, band_y, 20.0, 1.0, nearest)
+        field = relief.distance_field(grid, mask, nearest)
+
+        for x in range(-28, -10):
+            distance = relief.sample(grid, field, float(x), band_y)
+            self.assertLess(
+                distance, 0.6,
+                "the channel vanished at x=%d (distance %.2f)" % (x, distance),
+            )
+
+    def test_a_thin_channel_still_marks_a_node_without_exact_seeding(self):
+        cell = 1.119
+        grid = relief.make_grid(-28.66, -28.66, 28.66, 28.66, cell)
+        mask = relief.new_mask(grid)
+        band_y = grid.y(26) + cell / 2
+        relief.mark_rect(grid, mask, -20.0, band_y, 20.0, 1.0)
+        self.assertTrue(any(mask), "a sub-cell channel marked no nodes at all")
+
+    def test_a_triangulated_square_is_measured_exactly(self):
+        # Exercises the summed-area rejection in mark_triangles: the interior
+        # triangles must be skipped without changing the answer.
+        coords = []
+        indices = []
+        step = 1.0
+        n = 12
+        for j in range(n + 1):
+            for i in range(n + 1):
+                coords += [-6.0 + i * step, -6.0 + j * step, 0.0]
+        for j in range(n):
+            for i in range(n):
+                a = j * (n + 1) + i
+                indices += [a, a + 1, a + n + 2, a, a + n + 2, a + n + 1]
+
+        grid = relief.make_grid(-20, -20, 20, 20, 0.5)
+        mask = relief.new_mask(grid)
+        nearest = relief.Nearest(grid)
+        relief.mark_triangles(grid, mask, coords, indices, 0.0, 0.0, nearest)
+        field = relief.distance_field(grid, mask, nearest)
+
+        # Straight out from the middle of an edge.
+        for offset in (1.0, 3.0, 7.0):
+            measured = relief.sample(grid, field, 0.0, 6.0 + offset)
+            self.assertAlmostEqual(measured, offset, places=2)
+        # Off a corner, where the nearest point is the corner itself.
+        measured = relief.sample(grid, field, 10.0, 10.0)
+        self.assertAlmostEqual(measured, math.hypot(4.0, 4.0), places=2)
+
 
 class TestHeights(unittest.TestCase):
     def test_inside_the_land_the_face_stays_flat(self):
@@ -156,6 +268,31 @@ class TestHeights(unittest.TestCase):
     def test_a_zero_run_gives_a_vertical_step(self):
         self.assertAlmostEqual(relief.height_at(4.001, 4.0, 2.0, 0.0), -2.0)
 
+    def test_the_ramp_leaves_the_land_and_meets_the_floor_without_a_crease(self):
+        # A straight ramp turns a corner at each end. Sampled on a grid, a
+        # corner can only zig-zag from node to node, which is what made the
+        # slopes look jagged. An eased ramp starts and finishes flat.
+        land, depth, run = 2.0, 4.0, 5.0
+        step = run / 500
+
+        def slope(distance):
+            a = relief.height_at(distance, land, depth, run)
+            b = relief.height_at(distance + step, land, depth, run)
+            return abs(b - a) / step
+
+        self.assertLess(slope(land + step), 0.05)
+        self.assertLess(slope(land + run - 2 * step), 0.05)
+        # ...and is genuinely steep in between, so the test is not vacuous.
+        self.assertGreater(slope(land + run / 2), 1.0)
+
+    def test_the_ramp_never_climbs_back_up(self):
+        land, depth, run = 2.0, 4.0, 5.0
+        previous = 0.0
+        for k in range(0, 601):
+            height = relief.height_at(land + run * k / 500.0, land, depth, run)
+            self.assertLessEqual(height, previous + 1e-12)
+            previous = height
+
 
 class TestTerrainMesh(unittest.TestCase):
     def build(self, sign=-1.0):
@@ -168,6 +305,21 @@ class TestTerrainMesh(unittest.TestCase):
     def test_the_cutter_is_watertight(self):
         _, (coords, indices) = self.build()
         assert_watertight(self, coords, indices)
+
+    def test_the_flat_cap_does_not_cost_a_triangle_per_cell(self):
+        """The cutter is what the mesh booleans have to chew through.
+
+        Only its underside carries any shape; the cap is a flat rectangle, so
+        it is fanned from its centre. Copying the grid onto it instead doubled
+        the body and took a mold build from 40 seconds to two minutes.
+        """
+        grid, (_, indices) = self.build()
+        triangles = len(indices) // 3
+        surface = 2 * grid.nx * grid.ny
+        self.assertLess(
+            triangles - surface, surface // 4,
+            "everything above the relief surface should be nearly free",
+        )
 
     def test_the_cutter_is_outward_wound(self):
         _, (coords, indices) = self.build()

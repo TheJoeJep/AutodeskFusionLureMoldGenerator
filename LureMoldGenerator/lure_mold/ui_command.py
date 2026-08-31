@@ -44,6 +44,17 @@ INJECTION_CHOICES = [
     ("none", "None - no injection hole"),
 ]
 
+VENT_PLACEMENT_CHOICES = [
+    ("auto", "Automatic - find the trapped pockets"),
+    ("add", "Automatic, plus my own points"),
+    ("manual", "My own points only"),
+]
+
+VENT_DIRECTION_CHOICES = [
+    ("edge", "Along the parting line (standard)"),
+    ("top", "Straight up through the top half"),
+]
+
 # Handlers must be kept alive or Fusion garbage-collects them mid-command.
 _handlers = []
 
@@ -102,6 +113,13 @@ def _read_settings(inputs):
         runner_diameter=_mm(inputs.itemById("runnerDiameter")),
         vents_enabled=inputs.itemById("ventsEnabled").value,
         vent_diameter=_mm(inputs.itemById("ventDiameter")),
+        vent_placement=_read_choice(
+            inputs, "ventPlacement", VENT_PLACEMENT_CHOICES, "auto"
+        ),
+        vent_direction=_read_choice(
+            inputs, "ventDirection", VENT_DIRECTION_CHOICES, "edge"
+        ),
+        manual_vents=_read_vent_rows(inputs),
         flip_lure=inputs.itemById("flipLure").value,
         lay_out_flat=inputs.itemById("layOutFlat").value,
         auto_repair=inputs.itemById("autoRepair").value,
@@ -118,15 +136,131 @@ def _read_settings(inputs):
     )
 
 
-def _read_injection_mode(inputs):
-    dropdown = inputs.itemById("injectionMode")
+def _read_choice(inputs, ident, choices, fallback):
+    dropdown = inputs.itemById(ident)
     if dropdown is None or dropdown.selectedItem is None:
-        return "edge"
+        return fallback
     label = dropdown.selectedItem.name
-    for value, text in INJECTION_CHOICES:
+    for value, text in choices:
         if text == label:
             return value
-    return "edge"
+    return fallback
+
+
+def _select_choice(inputs, ident, choices, wanted):
+    dropdown = inputs.itemById(ident)
+    if dropdown is None:
+        return
+    for item in dropdown.listItems:
+        item.isSelected = any(
+            text == item.name and value == wanted for value, text in choices
+        )
+
+
+def _read_injection_mode(inputs):
+    return _read_choice(inputs, "injectionMode", INJECTION_CHOICES, "edge")
+
+
+# --- the manual vent table -------------------------------------------
+# Row 0 is a header of read-only strings. Nothing counts the header out
+# explicitly; the readers cast each cell to a ValueCommandInput, and the
+# header simply does not cast, which keeps them right whatever the layout.
+
+_vent_row_serial = [0]
+
+
+def _add_vent_row(inputs, x_mm, y_mm):
+    table = inputs.itemById("ventTable")
+    if table is None:
+        return
+    if len(_read_vent_rows(inputs)) >= layout.MAX_VENTS_PER_CAVITY:
+        return
+    _vent_row_serial[0] += 1
+    serial = _vent_row_serial[0]
+    children = table.commandInputs
+    row = table.rowCount
+    table.addCommandInput(
+        children.addValueInput(
+            "ventX%d" % serial, "X", "mm",
+            adsk.core.ValueInput.createByReal(x_mm * MM),
+        ),
+        row, 0,
+    )
+    table.addCommandInput(
+        children.addValueInput(
+            "ventY%d" % serial, "Y", "mm",
+            adsk.core.ValueInput.createByReal(y_mm * MM),
+        ),
+        row, 1,
+    )
+
+
+def _read_vent_rows(inputs):
+    """The typed-in vent positions, in mm from the cavity centre."""
+    table = inputs.itemById("ventTable")
+    if table is None:
+        return ()
+    points = []
+    for row in range(table.rowCount):
+        try:
+            x_in = adsk.core.ValueCommandInput.cast(
+                table.getInputAtPosition(row, 0)
+            )
+            y_in = adsk.core.ValueCommandInput.cast(
+                table.getInputAtPosition(row, 1)
+            )
+        except Exception:
+            continue
+        if x_in is None or y_in is None:
+            continue
+        points.append((x_in.value / MM, y_in.value / MM))
+    return tuple(points)
+
+
+def _set_vent_rows(inputs, points):
+    table = inputs.itemById("ventTable")
+    if table is None:
+        return
+    for row in reversed(range(table.rowCount)):
+        if adsk.core.ValueCommandInput.cast(table.getInputAtPosition(row, 0)):
+            table.deleteRow(row)
+    for x, y in list(points)[: layout.MAX_VENTS_PER_CAVITY]:
+        _add_vent_row(inputs, x, y)
+
+
+def _detected_vent_points(inputs):
+    """What the automatic detection would place, at the finished size."""
+    body = _selected_body(inputs)
+    if body is None:
+        return ()
+    try:
+        info = _analyse(body)
+        settings = _read_settings(inputs)
+        length = info.length
+        if settings.target_length > 0 and info.length > 0:
+            length = settings.target_length
+        found = mold_builder.scaled_vent_points(info, settings, length)
+    except Exception:
+        return ()
+    return tuple(found or ())
+
+
+def _sync_vent_inputs(inputs):
+    """Grey out the table unless the placement actually uses it."""
+    placement = _read_choice(
+        inputs, "ventPlacement", VENT_PLACEMENT_CHOICES, "auto"
+    )
+    enabled = inputs.itemById("ventsEnabled")
+    on = bool(enabled.value) if enabled is not None else True
+    manual = on and placement in ("add", "manual")
+    for ident in ("ventTable", "ventAdd", "ventRemove", "ventReset"):
+        item = inputs.itemById(ident)
+        if item is not None:
+            item.isEnabled = manual
+    for ident in ("ventPlacement", "ventDirection", "ventDiameter"):
+        item = inputs.itemById(ident)
+        if item is not None:
+            item.isEnabled = on
 
 
 def _plan_for(inputs):
@@ -298,6 +432,12 @@ def _show_previous_mold(design, visible):
             occurrence = root.occurrences.item(i)
             if occurrence.component.name == mold_builder.COMPONENT_NAME:
                 occurrence.isLightBulbOn = visible
+        # In a Part Design document there is no component to switch off: the
+        # mold is loose in the root, so hide the bodies themselves.
+        for i in range(root.meshBodies.count):
+            body = root.meshBodies.item(i)
+            if mold_builder.is_generated_body(body.name):
+                body.isLightBulbOn = visible
     except Exception:
         pass
 
@@ -327,7 +467,27 @@ class _InputChangedHandler(adsk.core.InputChangedEventHandler):
     def notify(self, args):
         try:
             inputs = args.inputs
-            if args.input.id == "lureBody":
+            changed = args.input.id
+
+            if changed == "ventAdd":
+                _add_vent_row(inputs, 0.0, 0.0)
+            elif changed == "ventRemove":
+                table = inputs.itemById("ventTable")
+                if table is not None and table.selectedRow > 0:
+                    table.deleteRow(table.selectedRow)
+            elif changed == "ventReset":
+                _set_vent_rows(inputs, _detected_vent_points(inputs))
+            elif changed == "ventPlacement":
+                # Switching to a manual mode with nothing typed in yet starts
+                # from what the detection found, so it is an edit rather than
+                # a blank sheet.
+                placement = _read_choice(
+                    inputs, "ventPlacement", VENT_PLACEMENT_CHOICES, "auto"
+                )
+                if placement == "manual" and not _read_vent_rows(inputs):
+                    _set_vent_rows(inputs, _detected_vent_points(inputs))
+
+            if changed == "lureBody":
                 body = _selected_body(inputs)
                 if body is not None:
                     saved = store.load(body)
@@ -340,6 +500,7 @@ class _InputChangedHandler(adsk.core.InputChangedEventHandler):
                         except Exception:
                             pass
             _sync_parting(inputs)
+            _sync_vent_inputs(inputs)
             _update_readout(inputs)
         except Exception:
             pass
@@ -371,14 +532,16 @@ def _apply_settings(inputs, settings):
     inputs.itemById("pegChamfer").value = settings.peg_chamfer * MM
     inputs.itemById("sprueDiameter").value = settings.sprue_diameter * MM
     inputs.itemById("funnelDiameter").value = settings.funnel_diameter * MM
-    for item in inputs.itemById("injectionMode").listItems:
-        item.isSelected = any(
-            text == item.name and value == settings.injection_mode
-            for value, text in INJECTION_CHOICES
-        )
+    _select_choice(inputs, "injectionMode", INJECTION_CHOICES,
+                   settings.injection_mode)
     inputs.itemById("runnerDiameter").value = settings.runner_diameter * MM
     inputs.itemById("ventsEnabled").value = settings.vents_enabled
     inputs.itemById("ventDiameter").value = settings.vent_diameter * MM
+    _select_choice(inputs, "ventPlacement", VENT_PLACEMENT_CHOICES,
+                   settings.vent_placement)
+    _select_choice(inputs, "ventDirection", VENT_DIRECTION_CHOICES,
+                   settings.vent_direction)
+    _set_vent_rows(inputs, settings.manual_vents)
     inputs.itemById("flipLure").value = settings.flip_lure
     inputs.itemById("layOutFlat").value = settings.lay_out_flat
     inputs.itemById("autoRepair").value = settings.auto_repair
@@ -398,7 +561,7 @@ class _CreatedHandler(adsk.core.CommandCreatedEventHandler):
         app = adsk.core.Application.get()
         try:
             command = args.command
-            command.setDialogInitialSize(400, 640)
+            command.setDialogInitialSize(420, 720)
             command.okButtonText = "Generate"
             inputs = command.commandInputs
             defaults = layout.MoldSettings()
@@ -464,6 +627,73 @@ class _CreatedHandler(adsk.core.CommandCreatedEventHandler):
                 "ventsEnabled", "Add vents", True, "", defaults.vents_enabled
             )
             value(inject_group, "ventDiameter", "Vent diameter", defaults.vent_diameter)
+
+            vent_group = inputs.addGroupCommandInput(
+                "ventGroup", "Vent placement"
+            ).children
+            positions_input = vent_group.addDropDownCommandInput(
+                "ventPlacement", "Positions",
+                adsk.core.DropDownStyles.TextListDropDownStyle,
+            )
+            for choice, text in VENT_PLACEMENT_CHOICES:
+                positions_input.listItems.add(
+                    text, choice == defaults.vent_placement
+                )
+            positions_input.tooltip = (
+                "Automatic simulates the shot filling from the gate and vents "
+                "wherever air ends up trapped - one per limb on a figure. Add "
+                "your own on top of those, or replace them entirely."
+            )
+            route_input = vent_group.addDropDownCommandInput(
+                "ventDirection", "Direction",
+                adsk.core.DropDownStyles.TextListDropDownStyle,
+            )
+            for choice, text in VENT_DIRECTION_CHOICES:
+                route_input.listItems.add(
+                    text, choice == defaults.vent_direction
+                )
+            route_input.tooltip = (
+                "Along the parting line is easiest to clean - the channel "
+                "splits open with the mold. Straight up is for a pocket well "
+                "above the split that nothing on the parting line can reach, "
+                "such as the curl of a curly-tail worm; it leaves a hole "
+                "through the top half to clear out after printing."
+            )
+
+            table = vent_group.addTableCommandInput(
+                "ventTable", "My vent points", 2, "1:1"
+            )
+            table.maximumVisibleRows = 9
+            table.minimumVisibleRows = 2
+            header_x = table.commandInputs.addStringValueInput(
+                "ventHeadX", "X", "X: along the lure (mm)"
+            )
+            header_x.isReadOnly = True
+            header_y = table.commandInputs.addStringValueInput(
+                "ventHeadY", "Y", "Y: across it (mm)"
+            )
+            header_y.isReadOnly = True
+            table.addCommandInput(header_x, 0, 0)
+            table.addCommandInput(header_y, 0, 1)
+
+            add_button = inputs.addBoolValueInput(
+                "ventAdd", "Add", False, "", False
+            )
+            add_button.tooltip = "Add a vent point at the cavity centre"
+            table.addToolbarCommandInput(add_button)
+            remove_button = inputs.addBoolValueInput(
+                "ventRemove", "Remove", False, "", False
+            )
+            remove_button.tooltip = "Remove the selected vent point"
+            table.addToolbarCommandInput(remove_button)
+            reset_button = inputs.addBoolValueInput(
+                "ventReset", "Reset to detected", False, "", False
+            )
+            reset_button.tooltip = (
+                "Replace the list with the pockets the automatic detection "
+                "found, as a starting point to adjust"
+            )
+            table.addToolbarCommandInput(reset_button)
 
             prep_group = inputs.addGroupCommandInput(
                 "prepGroup", "Mesh preparation"

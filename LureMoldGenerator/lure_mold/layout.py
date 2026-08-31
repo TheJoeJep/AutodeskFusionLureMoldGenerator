@@ -26,6 +26,10 @@ MAX_VENTS_PER_CAVITY = 8  # a sanity bound, not a design limit
 # would be infinitely long, at 90 it would be a vertical step.
 MIN_RELIEF_ANGLE = 5.0
 MAX_RELIEF_ANGLE = 85.0
+# The ramp eases in and out rather than running dead straight, so it needs
+# more room than a straight one to reach the same steepest angle. A
+# smoothstep's slope peaks at 1.5x its average, so that is the factor.
+RELIEF_EASE_FACTOR = 1.5
 
 
 @dataclass(frozen=True)
@@ -69,6 +73,18 @@ class MoldSettings:
     runner_diameter: float = 6.0
     vents_enabled: bool = True
     vent_diameter: float = 1.0
+    # Where the vents go. "auto" finds the pockets that trap air on its own;
+    # "add" keeps those and adds yours as well; "manual" uses only yours.
+    vent_placement: str = "auto"
+    # "edge" lays each vent along the parting line and out through the nearest
+    # block face, so it opens when the mold does and can be wiped clean. "top"
+    # takes it straight up through the lid instead, which is the only way to
+    # reach a pocket sitting well above the split -- the curl of a curly-tail
+    # worm, say, where nothing on the parting line is anywhere near the trap.
+    vent_direction: str = "edge"
+    # Your own vent positions, in mm from the cavity centre and in the lure's
+    # own frame (X along its length). Used only when vent_placement says so.
+    manual_vents: tuple = ()
     flip_lure: bool = False
     lay_out_flat: bool = True
     # Mesh preparation, done on a copy so the user's body is untouched.
@@ -200,14 +216,16 @@ def _nearest_face(point, column, row, settings, block_x, block_y):
 def relief_run(depth, angle_degrees):
     """Horizontal distance a relief ramp covers while dropping `depth`.
 
-    The angle is measured from the parting plane, so a 45 degree wall runs out
-    as far as it drops. Clamped away from 0 and 90, where the ramp would be
-    infinitely long or a vertical step.
+    The angle is measured from the parting plane and describes the *steepest*
+    part of the ramp. Because the ramp eases in and out (see relief.height_at)
+    rather than running straight, it needs RELIEF_EASE_FACTOR more room than a
+    straight wall at the same angle. Clamped away from 0 and 90, where the ramp
+    would be infinitely long or a vertical step.
     """
     if depth <= 0:
         return 0.0
     angle = min(max(angle_degrees, MIN_RELIEF_ANGLE), MAX_RELIEF_ANGLE)
-    return depth / math.tan(math.radians(angle))
+    return RELIEF_EASE_FACTOR * depth / math.tan(math.radians(angle))
 
 
 def _peg_candidates(block_x, block_y, cell_x, cell_y, columns, rows, inset, peg_count):
@@ -446,21 +464,34 @@ def compute_layout(
             # nearest face it can actually reach.
             vents = []
             if settings.vents_enabled:
-                if vent_points:
-                    points = [
+                placement = getattr(settings, "vent_placement", "auto")
+                manual = tuple(getattr(settings, "manual_vents", ()) or ())
+                found = tuple(vent_points or ())
+
+                if placement == "manual":
+                    chosen = manual
+                elif placement == "add":
+                    chosen = found + manual
+                else:
+                    chosen = found
+                if not chosen and placement != "manual":
+                    # Nothing detected: fall back to a single vent at the tail.
+                    chosen = ((-nose_sign * vent_offset, 0.0),)
+
+                direction = getattr(settings, "vent_direction", "edge")
+                for px, py in chosen[:MAX_VENTS_PER_CAVITY]:
+                    point = (
                         Point2(cx - px, cy - py) if rotated
                         else Point2(cx + px, cy + py)
-                        for px, py in vent_points[:MAX_VENTS_PER_CAVITY]
-                    ]
-                else:
-                    points = [Point2(cx - sign * vent_offset, cy)]
-
-                for point in points:
-                    entry = _nearest_face(
-                        point, i, j, settings, block_x, block_y
                     )
-                    if entry is None:
-                        boxed_in += 1
+                    if direction == "top":
+                        entry = None
+                    else:
+                        entry = _nearest_face(
+                            point, i, j, settings, block_x, block_y
+                        )
+                        if entry is None:
+                            boxed_in += 1
                     vents.append(Vent(point=point, entry=entry))
 
             cavities.append(
@@ -482,6 +513,17 @@ def compute_layout(
             "on every side. Those get a vertical riser through the top half "
             "instead, which has to be drilled out after printing."
             % (boxed_in, "y" if boxed_in == 1 else "ies")
+        )
+
+    if (
+        settings.vents_enabled
+        and getattr(settings, "vent_placement", "auto") == "manual"
+        and not getattr(settings, "manual_vents", ())
+    ):
+        warnings.append(
+            "Vents are set to use only your own points, but the list is "
+            "empty, so none were added. Add a point, or switch the placement "
+            "back to automatic."
         )
 
     if blocked:

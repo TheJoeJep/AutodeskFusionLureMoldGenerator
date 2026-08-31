@@ -156,7 +156,7 @@ class TestBuildStepOrder(unittest.TestCase):
         # it away; the component therefore has to exist first.
         text = self.source()
         self.assertLess(
-            text.index("component = fresh_component(design)"),
+            text.index("component = fresh_component(design"),
             text.index("mesh_prep.prepare"),
         )
 

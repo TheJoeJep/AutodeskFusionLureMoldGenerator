@@ -41,4 +41,16 @@ def load(mesh_body):
     # Ignore anything we no longer recognise, so an older saved blob still
     # loads after the settings gain or lose a field.
     known = _field_names()
-    return layout.MoldSettings(**{k: v for k, v in raw.items() if k in known})
+    values = {k: v for k, v in raw.items() if k in known}
+
+    # JSON has no tuples, so the vent list comes back as lists of lists.
+    points = values.get("manual_vents")
+    if points is not None:
+        try:
+            values["manual_vents"] = tuple(
+                (float(p[0]), float(p[1])) for p in points
+            )
+        except Exception:
+            values.pop("manual_vents", None)
+
+    return layout.MoldSettings(**values)

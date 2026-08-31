@@ -37,6 +37,8 @@ ROUND_SEGMENTS = 48
 CUT = adsk.fusion.MeshCombineOperationTypes.CutMeshCombineType
 PEG_HOLE_RELIEF = 0.5  # mm of extra hole depth, per spec 6.2.1
 SPRUE_BREAKOUT = 1.0  # mm the edge channel starts outside the block face
+# What a mold gets renamed to once we have given up on deleting it.
+RETIRED_SUFFIX = " (old - delete me)"
 
 
 class BuildResult:
@@ -59,13 +61,18 @@ def _mark_generated(design, body):
     body.attributes.add(ATTR_GROUP, ATTR_GENERATED, "1")
 
 
-def fresh_component(design):
+def fresh_component(design, notes=None):
     """Return an empty component to build into, replacing any previous mold.
 
     Everything is generated inside its own component rather than loose in the
     root. In a parametric design you cannot delete a body the timeline depends
     on, so 'regenerate' means dropping the whole previous component and
     starting again -- which is clean, and keeps the user's own lure untouched.
+
+    Part Design documents allow only one component, so there is nowhere to put
+    it and the build falls back to the root. Anything it cannot then delete is
+    at least switched off, because two molds sitting in the same place look
+    like one mold with inexplicable geometry.
     """
     root = design.rootComponent
     for i in reversed(range(root.occurrences.count)):
@@ -81,33 +88,91 @@ def fresh_component(design):
         occurrence.component.name = COMPONENT_NAME
         return occurrence.component
     except Exception:
-        # Part Design documents are limited to a single component, so there is
-        # nowhere to put one. Build in the root instead and clear away
+        # Part Design documents are limited to a single component, so there
+        # is nowhere to put one. Build in the root instead and clear away
         # whatever the last run left behind.
-        _clear_previous_bodies(root)
+        left = _clear_previous_bodies(root, design)
+        if left and notes is not None:
+            notes.append(
+                "This document only allows one component, so the mold is "
+                "built loose in the root and the timeline will not let go of "
+                "the older ones. %d %s marked \"%s\" and switched off; "
+                "%s safe to delete by hand, and %s slow every rebuild down "
+                "until you do. A normal Design document avoids this - there "
+                "each regenerate throws the previous mold away."
+                % (
+                    left,
+                    "body is" if left == 1 else "bodies are",
+                    RETIRED_SUFFIX.strip(),
+                    "it is" if left == 1 else "they are",
+                    "it will" if left == 1 else "they will",
+                )
+            )
         return root
 
 
-def _clear_previous_bodies(component):
+def is_generated_body(name):
+    """Is this one of ours, from an earlier run?
+
+    The merged mold is named after the component, so matching only the two
+    half names missed it entirely: in a Part Design document every regenerate
+    stacked another finished mold on top of the last, all of them visible.
+    """
+    return (
+        name in (BOTTOM_NAME, TOP_NAME)
+        or name.startswith(COMPONENT_NAME)
+        or name.startswith(("peg_", "sprue_", "vent_", "cavity_", "runner"))
+    )
+
+
+def _clear_previous_bodies(component, design=None):
     """Get the generated body names free again for a rebuild.
 
     Deleting is preferred, but a body produced by a feature cannot be removed
-    while the timeline depends on it. Renaming is the fallback: it at least
-    frees the name so the new mold is not silently suffixed.
+    while the timeline depends on it. Renaming is the fallback -- it frees the
+    name so the new mold is not silently suffixed -- and it is switched off as
+    well, so a mold nobody can delete cannot be mistaken for the current one.
+
+    In a parametric design deletion is never going to work, and asking anyway
+    is not free: a failed deleteMe on a 50,000 triangle body cost fifteen
+    seconds apiece, which on a document with a few old molds in it was most of
+    the build. So do not ask. A body already retired is not asked about again
+    either, for the same reason.
+
+    Returns how many had to be left behind.
     """
+    parametric = True
+    try:
+        parametric = (
+            design.designType == adsk.fusion.DesignTypes.ParametricDesignType
+        )
+    except Exception:
+        pass
+
+    left = 0
     for index in reversed(range(component.meshBodies.count)):
         body = component.meshBodies.item(index)
-        if body.name not in (BOTTOM_NAME, TOP_NAME) and not body.name.startswith(
-            ("peg_", "sprue_", "vent_", "cavity_", "runner")
-        ):
+        if not is_generated_body(body.name):
             continue
-        try:
-            body.deleteMe()
-        except Exception:
+        if body.name.endswith(RETIRED_SUFFIX):
+            left += 1  # dealt with on an earlier run, and still in the way
+            continue
+        if not parametric:
             try:
-                body.name = body.name + " (previous)"
+                body.deleteMe()
+                continue
             except Exception:
                 pass
+        left += 1
+        try:
+            body.isLightBulbOn = False
+        except Exception:
+            pass
+        try:
+            body.name = body.name + RETIRED_SUFFIX
+        except Exception:
+            pass
+    return left
 
 
 def _combine(component, target, tools, operation, keep_tools):
@@ -199,9 +264,10 @@ def resolve_parting(settings, lure, scaled_length):
 
 
 
-RELIEF_CELL_DIVISOR = 3.0   # cells per ramp width, so the slope is smooth
+RELIEF_CELL_DIVISOR = 7.0   # samples across the ramp, so the slope reads smooth
 RELIEF_CELL_MIN = 0.35      # mm, floor on cell size
-RELIEF_CELL_MAX = 1.20      # mm, ceiling on cell size
+RELIEF_CELL_MAX = 1.00      # mm, ceiling on cell size
+RELIEF_MAX_NODES = 45000    # the cutter is what the mesh booleans chew through
 
 
 def apply_relief(component, plan, settings, lure_coords, lure_indices):
@@ -234,9 +300,13 @@ def apply_relief(component, plan, settings, lure_coords, lure_indices):
     grid = relief.make_grid(
         -plan.block_x / 2 - pad, -plan.block_y / 2 - pad,
         plan.block_x / 2 + pad, plan.block_y / 2 + pad,
-        cell,
+        cell, RELIEF_MAX_NODES,
     )
     mask = relief.new_mask(grid)
+    # Measure to the features themselves rather than to the nodes they happen
+    # to cover. See relief.Nearest: without this the ramp corrugates, and any
+    # channel narrower than a cell can vanish from the relief altogether.
+    nearest = relief.Nearest(grid)
 
     # Every cavity, as its true outline.
     for cavity in plan.cavities:
@@ -244,7 +314,8 @@ def apply_relief(component, plan, settings, lure_coords, lure_indices):
             meshgen.rotate_z_180(lure_coords) if cavity.rotated else lure_coords
         )
         relief.mark_triangles(
-            grid, mask, coords, lure_indices, cavity.center.x, cavity.center.y
+            grid, mask, coords, lure_indices,
+            cavity.center.x, cavity.center.y, nearest,
         )
 
         if cavity.sprue is not None:
@@ -255,10 +326,11 @@ def apply_relief(component, plan, settings, lure_coords, lure_indices):
                     (cavity.sprue.y + cavity.sprue_entry.y) / 2,
                     abs(cavity.sprue_entry.x - cavity.sprue.x) + settings.funnel_diameter,
                     abs(cavity.sprue_entry.y - cavity.sprue.y) + settings.funnel_diameter,
+                    nearest,
                 )
             else:
                 relief.mark_disc(grid, mask, cavity.sprue.x, cavity.sprue.y,
-                                 settings.funnel_diameter / 2)
+                                 settings.funnel_diameter / 2, nearest)
 
         for vent in cavity.vents:
             if vent.entry is not None:
@@ -268,23 +340,26 @@ def apply_relief(component, plan, settings, lure_coords, lure_indices):
                     (vent.point.y + vent.entry.y) / 2,
                     abs(vent.entry.x - vent.point.x) + settings.vent_diameter,
                     abs(vent.entry.y - vent.point.y) + settings.vent_diameter,
+                    nearest,
                 )
             else:
                 relief.mark_disc(grid, mask, vent.point.x, vent.point.y,
-                                 settings.vent_diameter / 2)
+                                 settings.vent_diameter / 2, nearest)
 
     if plan.runner is not None:
         run_ = plan.runner
         relief.mark_rect(
             grid, mask, run_.x, (run_.y_from + run_.y_to) / 2,
             run_.diameter, abs(run_.y_to - run_.y_from) + run_.diameter,
+            nearest,
         )
 
     for peg in plan.pegs:
         relief.mark_disc(grid, mask, peg.x, peg.y,
-                         settings.peg_diameter / 2 + settings.peg_clearance)
+                         settings.peg_diameter / 2 + settings.peg_clearance,
+                         nearest)
 
-    field = relief.distance_field(grid, mask)
+    field = relief.distance_field(grid, mask, nearest)
 
     notes = []
     cap = max(plan.top_thickness, plan.bottom_thickness) + depth + 5.0
@@ -312,7 +387,8 @@ def build(design, lure_body, settings):
     """Generate both mold halves. Returns a BuildResult."""
     # The component is made first so mesh preparation has somewhere to put its
     # working copy -- that way the copy is swept away on the next regenerate.
-    component = fresh_component(design)
+    setup_notes = []
+    component = fresh_component(design, setup_notes)
     prepared, prep_notes = mesh_prep.prepare(component, lure_body, settings)
     lure = lure_analysis.analyze(prepared)
 
@@ -340,7 +416,7 @@ def build(design, lure_body, settings):
         cavity_distance=scaled_footprint(lure, length),
         vent_points=scaled_vent_points(lure, settings, length),
     )
-    warnings = list(prep_notes) + list(plan.warnings)
+    warnings = setup_notes + list(prep_notes) + list(plan.warnings)
 
     slow = mesh_prep.slow_build_warning(
         len(lure.indices) // 3, len(plan.cavities)

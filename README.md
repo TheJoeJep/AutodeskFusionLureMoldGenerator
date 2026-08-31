@@ -102,6 +102,8 @@ rather keep them separate to hide one and inspect the other.
 | Injection | Funnel diameter | 8 mm |
 | Injection | Runner diameter | 6 mm |
 | Injection | Add vents / Vent diameter | on / 1.0 mm |
+| Vent placement | Positions | Automatic |
+| Vent placement | Direction | Along the parting line |
 | Mesh preparation | Repair the mesh first | on |
 | Mesh preparation | Reduce the triangle count | on |
 | Mesh preparation | Triangle limit | 25,000 |
@@ -172,6 +174,32 @@ because a riser is a blind hole full of set plastic.
 
 The injection mode governs the sprue, not the vent.
 
+#### Placing them yourself
+
+Detection is good, not omniscient. **Positions** offers three modes:
+
+- **Automatic** -- the pockets it finds, and nothing else.
+- **Automatic, plus my own points** -- keeps those and adds yours.
+- **My own points only** -- yours alone.
+
+Switch to a manual mode and the table fills with what detection found, so you
+start by editing real numbers rather than from a blank sheet. **Reset to
+detected** puts them back. Coordinates are millimetres from the middle of the
+cavity, in the lure's own frame: X along its length, Y across it. They are
+mirrored automatically for a cavity turned to face a central runner, and they
+are *not* rescaled by the finished length -- they mean what the preview shows.
+
+#### Venting straight up
+
+**Direction** switches every vent from a channel on the parting line to a hole
+straight up through the top half. Along the parting line is the better default
+-- the channel splits open with the mold, so it wipes clean -- but it can only
+reach a trap that lies on the split. **A curly-tail worm is the case that
+needs the other one**: the curl rises well above the parting plane, and no
+channel lying on that plane comes anywhere near the air caught in the tip. The
+riser leaves a hole to clear out after printing, which is the price of reaching
+the trap at all.
+
 ### Parting face relief
 
 The two halves only need to seal against each other *near* the cavity and the
@@ -180,8 +208,15 @@ dead flat -- and a small flat land is much easier to get right than a whole
 face.
 
 A flat band is kept around every feature: each cavity, the sprue and its
-channel, the vent, the runner, and each peg. Beyond that band the face drops
-away at the slope angle to the recess depth, then runs flat.
+channel, the vent, the runner, and each peg. Beyond that band the face eases
+down to the recess depth, then runs flat.
+
+**Eases, not ramps.** A straight ramp turns a corner where it leaves the land
+and another where it meets the floor, and a corner sampled on a grid can only
+zig-zag along it from one grid point to the next. The slope is a smoothstep
+instead, so it starts and finishes flat and there is no corner to sample. It
+prints better for the same reason it looks better: no abrupt change of angle
+for the slicer to step over.
 
 **The band follows the real outline, not a box around it.** That matters more
 than it sounds: a figure with spread limbs filled only 52% of its own bounding
@@ -190,8 +225,19 @@ arms and legs and started the slope nowhere near the shape. Features are
 rasterised onto a grid, a distance field is swept out from them, and the face
 height follows from that distance.
 
-Ramp length is `depth / tan(angle)`, so at the 50 degree default a 2 mm recess
-ramps over 1.68 mm. **The land plus that ramp has to fit inside the wall
+**Distance is measured to the features themselves, not to the grid.** Measuring
+to the nearest marked grid point is quantised by up to a whole cell, and the
+error ripples as the outline weaves between the points -- which came out as
+corrugation running down every slope, a third of the ramp's depth on a real
+mold. Each feature instead records where its closest point actually is, and
+those points are carried outwards across the grid. The same change fixed a
+second fault: a vent channel narrower than one cell could fall between two rows
+of grid points, mark nothing, and so keep no land around itself, and the recess
+then swallowed the channel partway to the block face.
+
+Ramp length is `1.5 x depth / tan(angle)`, so at the 50 degree default a 2 mm
+recess eases over 2.52 mm. The angle is the *steepest* part of the ease, which
+is why it needs half as much room again as a straight wall at the same angle. **The land plus that ramp has to fit inside the wall
 thickness**, or there is nothing left to recess -- with the default 10 mm
 margins a 4 mm land leaves only a narrow band. You get a warning when it does
 not fit.
@@ -281,7 +327,7 @@ dataclass fields. That catches renames, which is how a stale
 python -m unittest discover -s tests -v
 ```
 
-216 tests, no dependencies beyond the standard library.
+237 tests, no dependencies beyond the standard library.
 
 | File | Covers |
 |---|---|

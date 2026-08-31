@@ -17,6 +17,7 @@ from lure_mold.layout import (  # noqa: E402
     MoldSettings,
     compute_layout,
     relief_run,
+    MAX_VENTS_PER_CAVITY,
 )  # noqa: E402
 
 
@@ -677,6 +678,113 @@ class TestVentsRunAlongTheSplit(unittest.TestCase):
         self.assertTrue(any("vent" in w.lower() for w in layout.warnings))
 
 
+class TestChoosingWhereTheVentsGo(unittest.TestCase):
+    """Overriding the automatic pocket detection, and venting upwards.
+
+    Detection is good but not omniscient, so the user has to be able to add
+    a vent it missed or place the lot by hand. And a pocket well above the
+    parting line -- the curl of a curly-tail worm -- cannot be reached by any
+    channel lying on the split, however cleverly placed.
+    """
+
+    def cavity(self, **kwargs):
+        found = [(-30.0, 5.0), (30.0, -5.0)]
+        plan = compute_layout(
+            default_lure(), MoldSettings(**kwargs), vent_points=found
+        )
+        return plan.cavities[0], plan
+
+    def test_automatic_placement_uses_what_was_detected(self):
+        cavity, _ = self.cavity()
+        self.assertEqual(
+            [(v.point.x, v.point.y) for v in cavity.vents],
+            [(-30.0, 5.0), (30.0, -5.0)],
+        )
+
+    def test_my_points_only_ignores_the_detected_ones(self):
+        cavity, _ = self.cavity(
+            vent_placement="manual", manual_vents=((12.0, -3.0),)
+        )
+        self.assertEqual(
+            [(v.point.x, v.point.y) for v in cavity.vents], [(12.0, -3.0)]
+        )
+
+    def test_adding_keeps_the_detected_ones_as_well(self):
+        cavity, _ = self.cavity(
+            vent_placement="add", manual_vents=((12.0, -3.0),)
+        )
+        self.assertEqual(
+            [(v.point.x, v.point.y) for v in cavity.vents],
+            [(-30.0, 5.0), (30.0, -5.0), (12.0, -3.0)],
+        )
+
+    def test_my_points_are_relative_to_the_cavity_not_the_block(self):
+        plan = compute_layout(
+            default_lure(),
+            MoldSettings(columns=2, rows=1, vent_placement="manual",
+                         manual_vents=((10.0, 4.0),)),
+            vent_points=[],
+        )
+        for cavity in plan.cavities:
+            vent = cavity.vents[0].point
+            self.assertAlmostEqual(vent.x - cavity.center.x, 10.0)
+            self.assertAlmostEqual(vent.y - cavity.center.y, 4.0)
+
+    def test_my_points_turn_with_a_cavity_that_faces_a_runner(self):
+        # Column 1 is rotated to face the runner, so a point at the lure's
+        # nose has to end up at the rotated nose, not stranded across the mold.
+        plan = compute_layout(
+            default_lure(),
+            MoldSettings(injection_mode="runner", columns=2, rows=1,
+                         vent_placement="manual", manual_vents=((10.0, 4.0),)),
+            vent_points=[],
+        )
+        rotated = [c for c in plan.cavities if c.rotated]
+        self.assertTrue(rotated, "a runner mold must turn one column around")
+        for cavity in rotated:
+            vent = cavity.vents[0].point
+            self.assertAlmostEqual(vent.x - cavity.center.x, -10.0)
+            self.assertAlmostEqual(vent.y - cavity.center.y, -4.0)
+
+    def test_an_empty_manual_list_vents_nothing_and_says_so(self):
+        cavity, plan = self.cavity(vent_placement="manual", manual_vents=())
+        self.assertEqual(cavity.vents, ())
+        self.assertTrue(
+            any("empty" in w for w in plan.warnings),
+            "the user has to be told why their mold has no vents",
+        )
+
+    def test_too_many_points_are_capped(self):
+        many = tuple((float(k), 0.0) for k in range(40))
+        cavity, _ = self.cavity(vent_placement="manual", manual_vents=many)
+        self.assertEqual(len(cavity.vents), MAX_VENTS_PER_CAVITY)
+
+    def test_venting_upwards_takes_every_vent_through_the_top(self):
+        cavity, _ = self.cavity(vent_direction="top")
+        self.assertEqual(len(cavity.vents), 2)
+        for vent in cavity.vents:
+            self.assertIsNone(
+                vent.entry, "an upward vent has no breakout on a block face"
+            )
+
+    def test_venting_upwards_is_not_reported_as_being_boxed_in(self):
+        # entry=None normally means "trapped, fell back to a riser", which
+        # earns a warning. Asked for deliberately, it is not a fallback.
+        _, plan = self.cavity(vent_direction="top")
+        self.assertFalse(
+            any("boxed in" in w for w in plan.warnings), plan.warnings
+        )
+
+    def test_the_default_is_still_automatic_along_the_split(self):
+        settings = MoldSettings()
+        self.assertEqual(settings.vent_placement, "auto")
+        self.assertEqual(settings.vent_direction, "edge")
+        self.assertEqual(settings.manual_vents, ())
+        cavity, _ = self.cavity()
+        for vent in cavity.vents:
+            self.assertIsNotNone(vent.entry)
+
+
 class TestReliefRamp(unittest.TestCase):
     """The parting face is flat only near features; the rest is recessed.
 
@@ -694,14 +802,41 @@ class TestReliefRamp(unittest.TestCase):
         steep = relief_run(2.0, 70.0)
         self.assertGreater(shallow, steep)
 
-    def test_forty_five_degrees_runs_as_far_as_it_drops(self):
-        self.assertAlmostEqual(relief_run(3.0, 45.0), 3.0)
+    def test_the_ramp_is_wider_than_a_straight_wall_because_it_eases(self):
+        # A straight 45 degree wall runs out as far as it drops. Ours eases in
+        # and out, so it needs half as much room again to reach the same
+        # steepest angle.
+        self.assertAlmostEqual(relief_run(3.0, 45.0), 3.0 * 1.5)
 
     def test_fifty_degrees_matches_the_trigonometry(self):
         import math
         self.assertAlmostEqual(
-            relief_run(2.0, 50.0), 2.0 / math.tan(math.radians(50.0))
+            relief_run(2.0, 50.0), 1.5 * 2.0 / math.tan(math.radians(50.0))
         )
+
+    def test_the_steepest_part_of_the_ramp_stands_at_the_requested_angle(self):
+        # The contract between layout.relief_run and relief.height_at: the run
+        # is sized so the steepest point of the eased ramp -- not its average
+        # -- is the angle the user asked for.
+        import math
+        from lure_mold import relief as relief_mod
+
+        for depth, angle in ((2.0, 50.0), (4.0, 50.0), (3.0, 35.0), (1.0, 70.0)):
+            run = relief_run(depth, angle)
+            land = 2.0
+            steps = 400
+            steepest = 0.0
+            previous = relief_mod.height_at(land, land, depth, run)
+            for k in range(1, steps + 1):
+                distance = land + run * k / steps
+                height = relief_mod.height_at(distance, land, depth, run)
+                slope = abs(height - previous) / (run / steps)
+                steepest = max(steepest, slope)
+                previous = height
+            self.assertAlmostEqual(
+                steepest, math.tan(math.radians(angle)), places=2,
+                msg="depth=%g angle=%g" % (depth, angle),
+            )
 
     def test_a_deeper_relief_needs_a_longer_ramp(self):
         self.assertGreater(relief_run(4.0, 50.0), relief_run(2.0, 50.0))
