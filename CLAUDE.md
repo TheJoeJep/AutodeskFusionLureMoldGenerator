@@ -107,7 +107,7 @@ order-dependent build steps. Extend it when you add a step whose order matters.
 ## Working on it
 
 ```bash
-python -m unittest discover -s tests -v          # 285 tests, stdlib only
+python -m unittest discover -s tests -v          # 304 tests, stdlib only
 powershell -ExecutionPolicy Bypass -File .\sync-addin.ps1
 ```
 
@@ -165,6 +165,14 @@ carried outwards. It also fixes features thinner than a cell, which could
 otherwise fall between two rows of nodes and mark nothing at all -- that is
 what left one vent with no land around it, swallowed by the recess partway to
 the block face.
+
+**A collision test written for one axis passes everything on the other.**
+`layout._hits_port` swept a band from the feature to its breakout using only
+the X extent, which was invisible while edge sprues were the only user. Vents
+routed to a Y face then looked clear to anything beside them -- and clamping
+bolts live on exactly those edges. It sweeps the rectangle now. When a
+placement test gains a new kind of caller, check what it assumes about
+direction.
 
 **What has to fit on the printer is not the block.** Laid out flat the two
 halves sit side by side, so the footprint is `2 * block_y + LAYOUT_GAP`. A

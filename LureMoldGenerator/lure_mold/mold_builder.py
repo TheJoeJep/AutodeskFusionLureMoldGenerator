@@ -14,6 +14,7 @@ conversion happens in one place: MM.
 """
 
 import dataclasses
+import math
 
 import adsk.core
 import adsk.fusion
@@ -37,6 +38,7 @@ TOP_NAME = "Mold Top"
 ROUND_SEGMENTS = 48
 CUT = adsk.fusion.MeshCombineOperationTypes.CutMeshCombineType
 PEG_HOLE_RELIEF = 0.5  # mm of extra hole depth, per spec 6.2.1
+BOLT_BREAKOUT = 1.0  # mm a bolt feature starts outside the face it opens on
 SPRUE_BREAKOUT = 1.0  # mm the edge channel starts outside the block face
 # More loose pieces than this and the boolean has gone wrong, not the shape.
 # Cutting them one by one would take longer than saying so.
@@ -132,7 +134,10 @@ def is_generated_body(name):
         name in (BOTTOM_NAME, TOP_NAME)
         or name.startswith(COMPONENT_NAME)
         or name.startswith(
-            ("peg_", "sprue_", "vent_", "cavity_", "runner", "island_")
+            (
+                "peg_", "sprue_", "vent_", "cavity_", "runner", "island_",
+                "bolt_",
+            )
         )
     )
 
@@ -370,6 +375,12 @@ def apply_relief(component, plan, settings, lure_coords, lure_indices):
         relief.mark_disc(grid, mask, peg.x, peg.y,
                          settings.peg_diameter / 2 + settings.peg_clearance,
                          nearest)
+
+    # The halves have to actually touch around a bolt, or tightening it just
+    # bends them instead of closing the parting line.
+    for bolt in plan.bolts:
+        relief.mark_disc(grid, mask, bolt.x, bolt.y,
+                         settings.bolt_diameter / 2, nearest)
 
     field = relief.distance_field(grid, mask, nearest)
 
@@ -624,6 +635,39 @@ def build(design, lure_body, settings):
         )
         holes.append(_add_mesh(component, hole_coords, hole_idx, "peg_hole_%d" % n))
 
+    # --- clamping bolts ---------------------------------------------------
+    # The hole goes through both halves; the head is sunk into the top's outer
+    # face and the nut trapped in the bottom's, so one spanner does the job.
+    bolt_holes = []
+    bolt_heads = []
+    bolt_nuts = []
+    capture = getattr(settings, "bolt_capture", True)
+    head_depth, nut_depth, _ = layout_mod.bolt_pockets(plan, settings)
+    for n, bolt in enumerate(plan.bolts):
+        coords, idx = meshgen.cylinder(
+            bolt.x, bolt.y,
+            -bottom_t - BOLT_BREAKOUT, top_t + BOLT_BREAKOUT,
+            settings.bolt_diameter / 2, ROUND_SEGMENTS,
+        )
+        bolt_holes.append(_add_mesh(component, coords, idx, "bolt_hole_%d" % n))
+        if not capture:
+            continue
+
+        coords, idx = meshgen.cylinder(
+            bolt.x, bolt.y, top_t - head_depth, top_t + BOLT_BREAKOUT,
+            settings.bolt_head_diameter / 2, ROUND_SEGMENTS,
+        )
+        bolt_heads.append(_add_mesh(component, coords, idx, "bolt_head_%d" % n))
+
+        # A nut is quoted across the flats; a six-sided prism is built from its
+        # circumradius, which is that over root three.
+        nut_radius = settings.bolt_nut_across_flats / math.sqrt(3.0)
+        coords, idx = meshgen.cylinder(
+            bolt.x, bolt.y,
+            -bottom_t - BOLT_BREAKOUT, -bottom_t + nut_depth, nut_radius, 6,
+        )
+        bolt_nuts.append(_add_mesh(component, coords, idx, "bolt_nut_%d" % n))
+
     def channel(inner, entry, r_inner, r_entry, name, breakout):
         """A tapered channel on the parting plane from `inner` to `entry`.
 
@@ -750,12 +794,17 @@ def build(design, lure_body, settings):
     # kept for the first cut and consumed by the second.
     if pins:
         bottom = _combine(component, bottom, pins, join, keep_tools=False)
-    through = edge_sprues + edge_vents
+    if bolt_nuts:
+        bottom = _combine(component, bottom, bolt_nuts, cut, keep_tools=False)
+    through = edge_sprues + edge_vents + bolt_holes
     if through:
         bottom = _combine(component, bottom, through, cut, keep_tools=True)
     bottom = _combine(component, bottom, instances, cut, keep_tools=True)
 
-    top = _combine(component, top, holes + top_sprues + vents, cut, keep_tools=False)
+    top = _combine(
+        component, top, holes + top_sprues + vents + bolt_heads, cut,
+        keep_tools=False,
+    )
 
     # Earlier cuts invalidated our handles, so fetch the shared tools again.
     if through:

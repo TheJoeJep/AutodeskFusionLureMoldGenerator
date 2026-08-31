@@ -52,7 +52,7 @@ LureMoldGenerator/
     ├── preview.py                CustomGraphics live overlay
     ├── store.py                  settings persisted on the lure body
     └── ui_command.py             command definition and event handlers
-tests/                            285 tests, stdlib unittest, no pytest,
+tests/                            304 tests, stdlib unittest, no pytest,
 ├── test_layout.py                all run OUTSIDE Fusion
 ├── test_meshgen.py
 ├── test_orient.py
@@ -178,6 +178,44 @@ These are not exposed in the dialog. They are fixed in `layout.py` and are liste
 | `vent_inset` | 5% of `L` | How far inboard from the tail tip the vent sits |
 | `peg_hole_relief` | 0.5mm | Extra hole depth beyond `peg_height` |
 | `LAYOUT_GAP` | 10.0mm | Space between the halves when laid out flat |
+
+### 6.2.2 Clamping bolts
+
+*Added during implementation.* Alignment pegs locate the halves and do nothing
+to hold them together. A printed soft-plastic mold that is not clamped flashes
+along the whole parting line, which was the largest remaining gap between a
+mold that is geometrically right and one that works at the bench.
+
+Bolts run **down the two long edges, not at the corners**. Two reasons, and the
+second is the one that decided it: a long mold bows open in the middle rather
+than at its ends, and the corners are the only four positions clear of
+everything, so bolts and pegs would be permanently fighting over them.
+Candidates are spread at half-steps along the long axis, with the corners and
+the short-edge middles kept as fallbacks. Pegs are placed first and bolts steer
+around them, which leaves existing peg behaviour untouched.
+
+**Only the through hole has to miss the cavity.** The counterbore and the nut
+pocket are sunk into the *outer* faces, a whole half-thickness away in Z, so
+they cannot foul it. The head therefore sets the inset from the block edge and
+the hole sets the clearance from the cavity -- conflating the two would have
+refused perfectly good positions.
+
+Bolts must also stay a head diameter apart from each other. Nothing else
+catches it: every candidate is a distinct position and each can be clear of the
+cavity and the channels while sitting on top of its neighbour. Asking for forty
+bolts on a 120mm block placed all forty, five millimetres apart, with eight
+millimetre heads.
+
+Pocket depths are capped at a third of their half so a shallow mold keeps a
+floor under them, and `bolt_pockets` returns them along with the bolt length
+needed -- measured under the head, the way bolts are sold. The relief marks
+every bolt as a feature, so the halves actually touch there; without that,
+tightening would bend them rather than close the parting line.
+
+**A bug this exposed:** `_hits_port` swept its band using the X extent only,
+which was invisible while edge sprues were its only caller. A vent routed to a
+Y face looked clear to anything beside it -- and bolts live on exactly those
+edges. It sweeps the rectangle now.
 
 ### 6.3 Injection sprue
 
@@ -575,6 +613,11 @@ Native `CommandInputs` — chosen over an HTML palette for unit-aware value inpu
 | Pegs | Peg diameter | value (mm) | 5.0 |
 | Pegs | Peg height | value (mm) | 5.0 |
 | Pegs | Peg clearance | value (mm) | 0.2 |
+| Clamping bolts | Number of bolts | integer spinner | 4 |
+| Clamping bolts | Clearance hole | value (mm) | 4.2 |
+| Clamping bolts | Head diameter | value (mm) | 8.0 |
+| Clamping bolts | Nut across flats | value (mm) | 7.0 |
+| Clamping bolts | Sink the head and trap the nut | bool | on |
 | Pegs | Lead-in chamfer | value (mm) | 0.6 |
 | Injection | Injection port | dropdown | Edge |
 | Injection | Sprue diameter | value (mm) | 4.0 |
@@ -631,7 +674,7 @@ Every failure produces a specific, actionable message. No silent failures, no ge
 
 ## 10. Testing
 
-**285 tests, stdlib `unittest`, no dependencies, all outside Fusion.**
+**304 tests, stdlib `unittest`, no dependencies, all outside Fusion.**
 
 | File | Covers |
 |---|---|

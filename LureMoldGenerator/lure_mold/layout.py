@@ -71,6 +71,14 @@ class MoldSettings:
     peg_height: float = 5.0
     peg_clearance: float = 0.2  # added to the hole DIAMETER, so half per side
     peg_chamfer: float = 0.6  # lead-in on the pin tip and the hole mouth
+    # Clamping. Pegs locate the halves; they do nothing to hold them together,
+    # and a printed mold that is not held shut flashes along the whole parting
+    # line. Hence on by default.
+    bolt_count: int = 4
+    bolt_diameter: float = 4.2  # clearance hole; 4.2 suits an M4
+    bolt_head_diameter: float = 8.0  # counterbore in the top half
+    bolt_nut_across_flats: float = 7.0  # hex pocket in the bottom half
+    bolt_capture: bool = True  # sink the head and trap the nut
     sprue_diameter: float = 4.0
     funnel_diameter: float = 8.0
     # "edge" runs a channel along the parting line out through the block's
@@ -210,6 +218,7 @@ class MoldLayout:
     parting_offset: float
     cavities: tuple
     pegs: tuple
+    bolts: tuple
     runner: object
     warnings: tuple
     bottom_placement: HalfPlacement
@@ -326,6 +335,24 @@ def resolve_grid(lure, settings):
     return dataclasses.replace(settings, columns=columns, rows=rows)
 
 
+def bolt_pockets(plan, settings):
+    """(head depth, nut depth, shortest bolt that reaches) in mm.
+
+    Neither pocket goes more than a third into its half, so a shallow mold
+    keeps a floor under it. Bolts are sold by length under the head, which is
+    what the third number is: from the counterbore floor through to the far
+    face, where the nut sits.
+    """
+    if not plan.bolts:
+        return 0.0, 0.0, 0.0
+    stack = plan.top_thickness + plan.bottom_thickness
+    if not getattr(settings, "bolt_capture", True):
+        return 0.0, 0.0, stack
+    head = min(settings.bolt_diameter, plan.top_thickness / 3.0)
+    nut = min(0.8 * settings.bolt_diameter, plan.bottom_thickness / 3.0)
+    return head, nut, stack - head
+
+
 def relief_run(depth, angle_degrees):
     """Horizontal distance a relief ramp covers while dropping `depth`.
 
@@ -390,6 +417,86 @@ def _peg_candidates(block_x, block_y, cell_x, cell_y, columns, rows, inset, peg_
     return unique
 
 
+def _unique(points):
+    """Drop repeats while keeping the order, which is a priority order."""
+    seen = set()
+    out = []
+    for point in points:
+        key = (round(point.x, 6), round(point.y, 6))
+        if key not in seen:
+            seen.add(key)
+            out.append(point)
+    return out
+
+
+def _bolt_candidates(block_x, block_y, inset, count):
+    """Bolt positions, spread along the two longest edges.
+
+    Not the corners. A long mold bows open in the middle rather than at its
+    ends, so clamping down the length holds it shut better -- and it leaves the
+    corners to the alignment pegs, which would otherwise be fighting the bolts
+    for the only four spots that are clear of everything.
+
+    Corners and the middles of the short edges follow as fallbacks, for when
+    the preferred run is blocked by a cavity or a channel.
+    """
+    if count <= 0:
+        return []
+    edge_x = block_x / 2 - inset
+    edge_y = block_y / 2 - inset
+    if edge_x <= 0 or edge_y <= 0:
+        return []
+
+    per_side = max(1, (count + 1) // 2)
+    along_x = block_x >= block_y
+    span = edge_x if along_x else edge_y
+    fixed = edge_y if along_x else edge_x
+
+    points = []
+    for i in range(per_side):
+        # Half-steps, so the run reaches towards the ends without landing on
+        # the corners themselves.
+        offset = -span + 2 * span * (i + 0.5) / per_side
+        for side in (-1, 1):
+            points.append(
+                Point2(offset, side * fixed) if along_x
+                else Point2(side * fixed, offset)
+            )
+
+    corners = [
+        Point2(sx * edge_x, sy * edge_y) for sx in (-1, 1) for sy in (-1, 1)
+    ]
+    shorts = (
+        [Point2(-edge_x, 0.0), Point2(edge_x, 0.0)] if along_x
+        else [Point2(0.0, -edge_y), Point2(0.0, edge_y)]
+    )
+    return _unique(points + corners + shorts)
+
+
+def _hits_peg(point, pegs, radius, peg_radius):
+    """True if a bolt would foul an alignment peg."""
+    limit = radius + peg_radius + CAVITY_CLEARANCE
+    return any(
+        math.hypot(point.x - peg.x, point.y - peg.y) < limit for peg in pegs
+    )
+
+
+def _crowds_bolt(point, bolts, head_diameter):
+    """True if a bolt would land on top of one already placed.
+
+    Nothing else catches this: the candidates are all distinct positions, and
+    every one of them can be clear of the cavity and the channels while still
+    being far too close to its neighbour. Asking for forty bolts on a 120mm
+    block placed all forty, at five millimetres apart, with eight millimetre
+    heads.
+    """
+    limit = head_diameter + EDGE_CLEARANCE
+    return any(
+        math.hypot(point.x - bolt.x, point.y - bolt.y) < limit
+        for bolt in bolts
+    )
+
+
 def _hits_cavity(point, cavities, lure, peg_radius, cavity_distance=None):
     """True if a peg would foul a cavity.
 
@@ -446,10 +553,16 @@ def _hits_port(point, cavities, settings, peg_radius):
     clearance = CAVITY_CLEARANCE + peg_radius
 
     def band(inner, entry, radius):
-        low, high = sorted((inner.x, entry.x))
+        # The rectangle the channel sweeps, whichever way it runs. It used to
+        # assume X, which was true while only edge sprues used it; a vent
+        # heading for a Y face then looked clear to anything beside it, and
+        # clamping bolts live on exactly those edges.
+        reach = radius + clearance
+        low_x, high_x = sorted((inner.x, entry.x))
+        low_y, high_y = sorted((inner.y, entry.y))
         return (
-            low - clearance <= point.x <= high + clearance
-            and abs(point.y - entry.y) <= radius + clearance
+            low_x - reach <= point.x <= high_x + reach
+            and low_y - reach <= point.y <= high_y + reach
         )
 
     def disc(centre, radius):
@@ -738,6 +851,56 @@ def compute_layout(
                 "no more non-colliding positions are available."
             )
 
+    # Clamping bolts, after the pegs so they can steer clear of them. Only
+    # the through hole has to miss the cavity: the counterbore and the nut
+    # pocket are sunk into the outer faces, a whole half-thickness away.
+    bolts = []
+    bolt_count = getattr(settings, "bolt_count", 0)
+    if bolt_count > 0:
+        hole_radius = settings.bolt_diameter / 2
+        head_radius = max(
+            settings.bolt_head_diameter, settings.bolt_nut_across_flats
+        ) / 2
+        bolt_inset = head_radius + EDGE_CLEARANCE
+        for candidate in _bolt_candidates(
+            block_x, block_y, bolt_inset, bolt_count
+        ):
+            if len(bolts) >= bolt_count:
+                break
+            if _hits_cavity(
+                candidate, cavities, lure, hole_radius, cavity_distance
+            ):
+                continue
+            if _hits_port(candidate, cavities, settings, hole_radius):
+                continue
+            if _hits_runner(candidate, runner, hole_radius):
+                continue
+            if _hits_peg(candidate, pegs, hole_radius, peg_radius):
+                continue
+            if _crowds_bolt(candidate, bolts, 2 * head_radius):
+                continue
+            bolts.append(candidate)
+
+        if len(bolts) < bolt_count:
+            if not bolts:
+                warnings.append(
+                    "Could not place any of the %d clamping bolts - a %gmm "
+                    "head needs %gmm of clear wall and there is not that much "
+                    "anywhere. Increase the margins, or use a smaller bolt. "
+                    "Without clamping the mold will flash along the parting "
+                    "line."
+                    % (
+                        bolt_count,
+                        settings.bolt_head_diameter,
+                        settings.bolt_head_diameter / 2 + EDGE_CLEARANCE,
+                    )
+                )
+            else:
+                warnings.append(
+                    "Placed %d of %d clamping bolts - the rest have nowhere "
+                    "clear to go." % (len(bolts), bolt_count)
+                )
+
     # Lay the two halves out side by side, both resting on z = 0 with their
     # cavities facing up so the user can see what they just made.
     #
@@ -759,6 +922,7 @@ def compute_layout(
         parting_offset=parting,
         cavities=cavities,
         pegs=tuple(pegs),
+        bolts=tuple(bolts),
         runner=runner,
         warnings=tuple(warnings),
         bottom_placement=HalfPlacement(

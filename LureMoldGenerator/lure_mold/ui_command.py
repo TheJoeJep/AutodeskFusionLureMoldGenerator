@@ -107,6 +107,11 @@ def _read_settings(inputs):
         peg_height=_mm(inputs.itemById("pegHeight")),
         peg_clearance=_mm(inputs.itemById("pegClearance")),
         peg_chamfer=_mm(inputs.itemById("pegChamfer")),
+        bolt_count=inputs.itemById("boltCount").value,
+        bolt_diameter=_mm(inputs.itemById("boltDiameter")),
+        bolt_head_diameter=_mm(inputs.itemById("boltHeadDiameter")),
+        bolt_nut_across_flats=_mm(inputs.itemById("boltNutAcrossFlats")),
+        bolt_capture=inputs.itemById("boltCapture").value,
         sprue_diameter=_mm(inputs.itemById("sprueDiameter")),
         funnel_diameter=_mm(inputs.itemById("funnelDiameter")),
         injection_mode=_read_injection_mode(inputs),
@@ -381,12 +386,16 @@ def _update_readout(inputs):
         % (plan.block_x, plan.block_y, plan.block_z),
         "printed %.0f x %.0f mm &nbsp;|&nbsp; %s"
         % (plan.printed_x, plan.printed_y, _weight_line(inputs, plan, settings)),
-        "%d cavit%s &nbsp;|&nbsp; %d peg%s &nbsp;|&nbsp; halves %.1f / %.1f mm"
+        "%d cavit%s &nbsp;|&nbsp; %d peg%s &nbsp;|&nbsp; %s &nbsp;|&nbsp; "
+        "halves %.1f / %.1f mm"
         % (
             len(plan.cavities),
             "y" if len(plan.cavities) == 1 else "ies",
             len(plan.pegs),
             "" if len(plan.pegs) == 1 else "s",
+            "no bolts" if not plan.bolts else
+            "%d bolts, %.0f mm or longer"
+            % (len(plan.bolts), layout.bolt_pockets(plan, settings)[2]),
             plan.top_thickness,
             plan.bottom_thickness,
         ),
@@ -571,6 +580,13 @@ def _apply_settings(inputs, settings):
     inputs.itemById("pegHeight").value = settings.peg_height * MM
     inputs.itemById("pegClearance").value = settings.peg_clearance * MM
     inputs.itemById("pegChamfer").value = settings.peg_chamfer * MM
+    inputs.itemById("boltCount").value = settings.bolt_count
+    inputs.itemById("boltDiameter").value = settings.bolt_diameter * MM
+    inputs.itemById("boltHeadDiameter").value = settings.bolt_head_diameter * MM
+    inputs.itemById("boltNutAcrossFlats").value = (
+        settings.bolt_nut_across_flats * MM
+    )
+    inputs.itemById("boltCapture").value = settings.bolt_capture
     inputs.itemById("sprueDiameter").value = settings.sprue_diameter * MM
     inputs.itemById("funnelDiameter").value = settings.funnel_diameter * MM
     _select_choice(inputs, "injectionMode", INJECTION_CHOICES,
@@ -682,6 +698,33 @@ class _CreatedHandler(adsk.core.CommandCreatedEventHandler):
             value(peg_group, "pegClearance", "Fit clearance", defaults.peg_clearance)
             value(peg_group, "pegChamfer", "Lead-in chamfer",
                   defaults.peg_chamfer)
+
+            clamp_group = inputs.addGroupCommandInput(
+                "clampGroup", "Clamping bolts"
+            ).children
+            bolts = clamp_group.addIntegerSpinnerCommandInput(
+                "boltCount", "Number of bolts", 0, 24, 2, defaults.bolt_count
+            )
+            bolts.tooltip = (
+                "Pegs locate the halves; they do not hold them together. An "
+                "unclamped mold flashes along the whole parting line. Set 0 "
+                "if you clamp it some other way."
+            )
+            value(clamp_group, "boltDiameter", "Clearance hole",
+                  defaults.bolt_diameter)
+            value(clamp_group, "boltHeadDiameter", "Head diameter",
+                  defaults.bolt_head_diameter)
+            value(clamp_group, "boltNutAcrossFlats", "Nut across flats",
+                  defaults.bolt_nut_across_flats)
+            capture = clamp_group.addBoolValueInput(
+                "boltCapture", "Sink the head and trap the nut", True, "",
+                defaults.bolt_capture,
+            )
+            capture.tooltip = (
+                "Counterbore the head into the top half and pocket a hex nut "
+                "in the bottom, so the mold closes flat and one spanner does "
+                "the job. The defaults suit an M4."
+            )
 
             inject_group = inputs.addGroupCommandInput(
                 "injectGroup", "Injection"

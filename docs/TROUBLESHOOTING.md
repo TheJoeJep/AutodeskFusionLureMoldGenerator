@@ -274,6 +274,35 @@ boolean against a bad mesh does not fail -- it returns corrupt geometry.
 
 Run Mesh > Prepare > Repair on the lure and try again.
 
+### "Could not place any of the N clamping bolts"
+
+The bolt head needs material around it and the walls are too thin. The message
+says how much clear wall a head that size needs; the usual fixes are a bigger
+margin, a smaller bolt, or clamping the mold some other way and setting the
+count to 0.
+
+Note it is the **head** that decides how far in from the block edge a bolt sits,
+and the **hole** that decides how close to the cavity it can get -- the
+counterbore and the nut pocket are sunk into the outer faces, a half-thickness
+away from the cavity, so they do not compete with it.
+
+### "Placed N of M clamping bolts"
+
+The rest had nowhere clear to go. Bolts avoid cavities, sprues, vents, the
+runner, the pegs, and each other -- two bolts must be at least a head diameter
+plus 2mm apart, or their counterbores would run into one another.
+
+Fewer, well spread, is usually fine. If you want more, widen the margins.
+
+### What length bolts do I need?
+
+The readout says, next to the bolt count: measured **under the head**, which is
+how bolts are sold. With the head sunk and the nut trapped, that is the whole
+stack less the counterbore depth.
+
+The defaults suit an M4: 4.2 mm clearance hole, 8 mm head, 7 mm across the
+flats of the nut. For M5 use 5.3 / 10 / 8.
+
 ### Fewer pegs than I asked for, or none at all
 
 Every candidate position is rejected if it collides with a cavity, a sprue, a

@@ -20,6 +20,7 @@ CAVITY_COLOUR = (235, 150, 60, 255)
 PEG_COLOUR = (80, 190, 120, 255)
 SPRUE_COLOUR = (225, 90, 90, 255)
 LAND_COLOUR = (150, 150, 165, 255)
+BOLT_COLOUR = (120, 120, 130, 255)
 
 CIRCLE_SEGMENTS = 24
 
@@ -178,6 +179,18 @@ def _draw_half(group, plan, settings, lure_length, lure_height,
         line(_circle(peg.x, peg.y, settings.peg_diameter / 2, 0.0), PEG_COLOUR)
         line(_circle(peg.x, peg.y, settings.peg_diameter / 2,
                      settings.peg_height), PEG_COLOUR)
+
+    # A bolt is drawn as the hole on the parting face and the head above it,
+    # since the head is the part that has to find room near the block edge.
+    for bolt in getattr(plan, "bolts", ()):
+        line(_circle(bolt.x, bolt.y, settings.bolt_diameter / 2, 0.0),
+             BOLT_COLOUR)
+        if getattr(settings, "bolt_capture", True):
+            line(
+                _circle(bolt.x, bolt.y, settings.bolt_head_diameter / 2,
+                        plan.top_thickness),
+                BOLT_COLOUR,
+            )
 
 
 def draw(design, plan, lure_length, lure_height, settings):

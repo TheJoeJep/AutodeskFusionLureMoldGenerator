@@ -4,6 +4,7 @@ These run OUTSIDE Fusion with plain stdlib unittest:
     python -m unittest discover -s tests -v
 """
 
+import math
 import os
 import sys
 import unittest
@@ -17,6 +18,7 @@ from lure_mold.layout import (  # noqa: E402
     MoldSettings,
     compute_layout,
     relief_run,
+    bolt_pockets,
     channel_volume,
     max_grid_for_bed,
     resolve_grid,
@@ -794,6 +796,139 @@ class TestChoosingWhereTheVentsGo(unittest.TestCase):
             self.assertIsNotNone(vent.entry)
 
 
+class TestClampingBolts(unittest.TestCase):
+    """A printed mold that is not held shut flashes along the parting line.
+
+    Alignment pegs locate the halves; they do nothing to hold them together.
+    """
+
+    def test_four_bolts_by_default(self):
+        plan = compute_layout(default_lure(), MoldSettings())
+        self.assertEqual(len(plan.bolts), 4)
+
+    def test_asking_for_none_gives_none(self):
+        plan = compute_layout(default_lure(), MoldSettings(bolt_count=0))
+        self.assertEqual(plan.bolts, ())
+
+    def test_bolts_run_down_the_long_edges_not_the_corners(self):
+        # A long mold bows open in the middle, not at its ends, so clamping
+        # down the length beats clamping the corners -- and it leaves the
+        # corners free for the pegs.
+        plan = compute_layout(default_lure(), MoldSettings())
+        for bolt in plan.bolts:
+            self.assertAlmostEqual(abs(bolt.y), plan.block_y / 2 - 6.0)
+            self.assertLess(abs(bolt.x), plan.block_x / 2 - 6.0 - 1e-9)
+
+    def test_they_are_spread_evenly_and_symmetrically(self):
+        plan = compute_layout(default_lure(), MoldSettings())
+        xs = sorted({round(b.x, 6) for b in plan.bolts})
+        self.assertEqual(len(xs), 2)
+        self.assertAlmostEqual(xs[0], -xs[1])
+        for x in xs:
+            for sign in (-1, 1):
+                self.assertTrue(
+                    any(
+                        abs(b.x - x) < 1e-6 and b.y * sign > 0
+                        for b in plan.bolts
+                    ),
+                    "every position should be bolted on both edges",
+                )
+
+    def test_bolts_go_on_the_long_edges_of_a_tall_block_too(self):
+        plan = compute_layout(default_lure(), MoldSettings(rows=4))
+        self.assertGreater(plan.block_y, plan.block_x)
+        for bolt in plan.bolts:
+            self.assertAlmostEqual(abs(bolt.x), plan.block_x / 2 - 6.0)
+
+    def test_bolts_leave_the_corners_to_the_pegs(self):
+        plan = compute_layout(default_lure(), MoldSettings())
+        self.assertEqual(len(plan.pegs), 2)
+        for peg in plan.pegs:
+            self.assertAlmostEqual(abs(peg.x), 55.5)
+            self.assertAlmostEqual(abs(peg.y), 20.5)
+
+    def test_a_bolt_never_lands_on_a_peg(self):
+        plan = compute_layout(
+            default_lure(), MoldSettings(peg_count=8, bolt_count=8)
+        )
+        for bolt in plan.bolts:
+            for peg in plan.pegs:
+                self.assertGreater(
+                    math.hypot(bolt.x - peg.x, bolt.y - peg.y), 4.0,
+                    "bolt %s sits on peg %s" % (bolt, peg),
+                )
+
+    def test_a_bolt_never_lands_in_a_cavity(self):
+        lure = default_lure()
+        plan = compute_layout(
+            lure, MoldSettings(columns=3, rows=2, bolt_count=12)
+        )
+        for bolt in plan.bolts:
+            for cavity in plan.cavities:
+                inside = (
+                    abs(bolt.x - cavity.center.x) < lure.length / 2
+                    and abs(bolt.y - cavity.center.y) < lure.height / 2
+                )
+                self.assertFalse(inside, "bolt %s is in a cavity" % (bolt,))
+
+    def test_a_bolt_never_lands_on_a_sprue_or_a_vent(self):
+        plan = compute_layout(default_lure(), MoldSettings(bolt_count=10))
+        cavity = plan.cavities[0]
+        for bolt in plan.bolts:
+            self.assertGreater(
+                abs(bolt.y - cavity.sprue.y), plan.block_y * 0 + 4.0,
+                "bolt %s sits in the sprue channel" % (bolt,),
+            )
+
+    def test_the_head_decides_how_far_in_from_the_edge_they_sit(self):
+        # The counterbore is what needs material around it, not the hole.
+        small = compute_layout(
+            default_lure(),
+            MoldSettings(margin_y=25.0, bolt_head_diameter=8.0),
+        )
+        large = compute_layout(
+            default_lure(),
+            MoldSettings(margin_y=25.0, bolt_head_diameter=16.0),
+        )
+        self.assertTrue(small.bolts and large.bolts)
+        self.assertAlmostEqual(
+            abs(small.bolts[0].y) - abs(large.bolts[0].y), 4.0
+        )
+
+    def test_bolts_that_will_not_fit_are_reported(self):
+        # A 16mm head in a 10mm wall has nowhere to go.
+        plan = compute_layout(
+            default_lure(), MoldSettings(bolt_head_diameter=16.0)
+        )
+        self.assertLess(len(plan.bolts), 4)
+        self.assertTrue(
+            any("bolt" in w.lower() for w in plan.warnings), plan.warnings
+        )
+
+    def test_asking_for_more_bolts_than_fit_places_what_it_can(self):
+        plan = compute_layout(default_lure(), MoldSettings(bolt_count=40))
+        self.assertGreater(len(plan.bolts), 0)
+        self.assertLess(len(plan.bolts), 40)
+        self.assertTrue(any("bolt" in w.lower() for w in plan.warnings))
+
+    def test_bolts_stay_inside_the_block(self):
+        plan = compute_layout(default_lure(), MoldSettings(bolt_count=6))
+        for bolt in plan.bolts:
+            self.assertLessEqual(abs(bolt.x) + 4.0, plan.block_x / 2 + 1e-9)
+            self.assertLessEqual(abs(bolt.y) + 4.0, plan.block_y / 2 + 1e-9)
+
+    def test_bolts_do_not_land_on_the_central_runner(self):
+        plan = compute_layout(
+            default_lure(),
+            MoldSettings(injection_mode="runner", columns=2, bolt_count=8),
+        )
+        self.assertIsNotNone(plan.runner)
+        for bolt in plan.bolts:
+            self.assertGreater(
+                abs(bolt.x - plan.runner.x), plan.runner.diameter / 2 + 2.0
+            )
+
+
 class TestWhatTheShotWeighs(unittest.TestCase):
     """Anglers talk in grams, and the cavity volume is already known exactly."""
 
@@ -1132,3 +1267,49 @@ class TestPegsUseTheRealOutline(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBoltPockets(unittest.TestCase):
+    """How deep the recesses go, and what length of bolt that needs."""
+
+    def plan(self, **kwargs):
+        settings = MoldSettings(**kwargs)
+        return compute_layout(default_lure(), settings), settings
+
+    def test_no_bolts_means_no_pockets(self):
+        plan, settings = self.plan(bolt_count=0)
+        self.assertEqual(bolt_pockets(plan, settings), (0.0, 0.0, 0.0))
+
+    def test_without_capture_the_bolt_spans_the_whole_stack(self):
+        plan, settings = self.plan(bolt_capture=False)
+        head, nut, length = bolt_pockets(plan, settings)
+        self.assertEqual((head, nut), (0.0, 0.0))
+        self.assertAlmostEqual(
+            length, plan.top_thickness + plan.bottom_thickness
+        )
+
+    def test_the_bolt_is_measured_under_its_head(self):
+        plan, settings = self.plan()
+        head, _, length = bolt_pockets(plan, settings)
+        self.assertAlmostEqual(
+            length, plan.top_thickness + plan.bottom_thickness - head
+        )
+
+    def test_a_pocket_never_eats_more_than_a_third_of_its_half(self):
+        # A shallow mold has to keep a floor under the head and the nut.
+        # margin_y as well, or a 10mm bolt has no wall to sit in and the
+        # test measures an empty list instead of a clamped depth.
+        plan, settings = self.plan(
+            margin_z=1.0, margin_y=25.0, bolt_diameter=10.0
+        )
+        self.assertTrue(plan.bolts)
+        head, nut, _ = bolt_pockets(plan, settings)
+        self.assertLessEqual(head, plan.top_thickness / 3.0 + 1e-9)
+        self.assertLessEqual(nut, plan.bottom_thickness / 3.0 + 1e-9)
+        self.assertGreater(head, 0.0)
+
+    def test_an_ordinary_mold_uses_the_full_depths(self):
+        plan, settings = self.plan()
+        head, nut, _ = bolt_pockets(plan, settings)
+        self.assertAlmostEqual(head, settings.bolt_diameter)
+        self.assertAlmostEqual(nut, 0.8 * settings.bolt_diameter)

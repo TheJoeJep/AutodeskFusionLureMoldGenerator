@@ -97,6 +97,11 @@ rather keep them separate to hide one and inspect the other.
 | Alignment pegs | Diameter / Height | 5 mm |
 | Alignment pegs | Fit clearance | 0.2 mm |
 | Alignment pegs | Lead-in chamfer | 0.6 mm |
+| Clamping bolts | Number of bolts | 4 |
+| Clamping bolts | Clearance hole | 4.2 mm |
+| Clamping bolts | Head diameter | 8 mm |
+| Clamping bolts | Nut across flats | 7 mm |
+| Clamping bolts | Sink the head and trap the nut | on |
 | Printer | Check it fits the bed | on |
 | Printer | Bed width / depth | 220 / 220 mm |
 | Printer | Fit the grid to the bed | off |
@@ -155,6 +160,32 @@ Four choices, and the default matches how commercial molds are actually built:
 - **Top** -- a vertical funnel down through the lid. Works at any grid
   position, so it is the fallback for cavities an edge channel cannot reach.
 - **None** -- no injection hole at all.
+
+### Clamping
+
+**Pegs locate the halves. They do nothing to hold them together**, and a
+printed mold that is not held shut flashes along the whole parting line -- so
+bolt holes are on by default, four of them, sized for M4.
+
+They run **down the two long edges rather than at the corners**. A long mold
+bows open in the middle, not at its ends, so that is where clamping does the
+most good; it also leaves the corners to the pegs instead of the two fighting
+over the only four spots clear of everything.
+
+With **Sink the head and trap the nut** on, the head is counterbored into the
+top half and a hex pocket in the bottom holds the nut, so the mold closes flat
+and one spanner does the job. Neither pocket goes more than a third into its
+half. The readout tells you the length to buy -- measured under the head, the
+way bolts are sold.
+
+Only the through hole has to stay clear of the cavity. The counterbore and the
+nut pocket are sunk into the outer faces, a whole half-thickness away from it,
+so it is the **head diameter that decides how far in from the block edge** the
+bolts sit, and the hole diameter that decides how close to the cavity.
+
+The parting-face relief keeps a flat land around every bolt. Without it the
+halves would not touch there, and tightening would bend them instead of closing
+the parting line.
 
 ### Vents
 
@@ -390,7 +421,7 @@ dataclass fields. That catches renames, which is how a stale
 python -m unittest discover -s tests -v
 ```
 
-285 tests, no dependencies beyond the standard library.
+304 tests, no dependencies beyond the standard library.
 
 | File | Covers |
 |---|---|

@@ -18,37 +18,32 @@ Solid, and verified on real models:
   option.
 - Mesh audit both ways: stray shells out of the lure, loose islands out of the
   mold, sealed pockets reported, cut volume sanity-checked.
-- 285 tests, all outside Fusion.
+- 304 tests, all outside Fusion.
 
 The mold that comes out is **geometrically** right. Most of what follows is
 about making it a thing you can actually use at the bench.
 
 ---
 
-## 1. The biggest gap: nothing holds the mold shut
+## 1. Nothing holds the mold shut -- DONE
 
-A printed soft-plastic mold that is not clamped flashes badly along the whole
-parting line. Every commercial mold has clamping; this one has alignment pegs
-and nothing else. That is the largest distance between "correct geometry" and
-"usable tool", and it is why this is first.
+Four bolt holes by default, sized for M4, running down the two long edges
+rather than at the corners: a long mold bows open in the middle, and the
+corners are the only four spots clear of everything, so bolts and pegs would
+have been fighting over them.
 
-Options, roughly in order of how well they print:
+The head is counterbored into the top half and a hex pocket in the bottom traps
+the nut, so one spanner does the job and the mold closes flat. The readout
+gives the bolt length to buy, measured under the head.
 
-- **Bolt holes** — counterbored through the top half, clearance or tapped in
-  the bottom, at the corners. Needs peg-style placement logic, which already
-  exists and can be reused nearly wholesale.
-- **Clip slots** — a shallow relief along two edges for a bulldog clip or a
-  spring clamp. Cheapest to build, no hardware, and what most people actually
-  use.
-- **Rubber-band grooves** — a channel right round the block.
+Still open, and worth doing on top:
 
-A **perimeter lip** is worth considering alongside: a step around the whole
-parting face, one half male and one female. It locates far better than two pegs
-and resists the peel-open force that flashing comes from. It is also a
-straightforward offset of the block outline, so the geometry is easy.
+- **A perimeter lip** -- a step round the parting face, male on one half and
+  female on the other. It locates better than two pegs and resists the peel
+  the flashing comes from. A straightforward offset of the block outline.
+- **Clip relief** -- a shallow notch on two edges for a bulldog or spring
+  clamp, for people who would rather not buy hardware.
 
-**Effort:** moderate. Bolt holes reuse `_peg_candidates` and the collision
-tests. A lip is a new layout primitive but a simple one.
 
 ## 2. Will it fit the printer? -- DONE
 
@@ -147,9 +142,11 @@ The mesh audit closed the big one. These are what is left:
 
 Weight readout, bed fit and scale sanity are **done**.
 
-**Clamping is next.** It is the difference between a mold that is right and a
-mold that works, and it is now the only thing in this document standing between
-the tool and a bait you can actually pour.
+Clamping bolts are **done** too.
 
-**Then the Check button**, because there is enough worth checking now that
+**The Check button is next.** There is enough worth checking now -- mesh audit,
+undercuts, release percentage, peg and bolt placement, bed fit -- that waiting
+out a build to find any of it is the wrong shape for the tool.
+
+**Then a perimeter lip**, because there is enough worth checking now that
 waiting 50 seconds to find out is the wrong shape for the tool.
