@@ -148,5 +148,6 @@ Clamping bolts are **done** too.
 undercuts, release percentage, peg and bolt placement, bed fit -- that waiting
 out a build to find any of it is the wrong shape for the tool.
 
-**Then a perimeter lip**, because there is enough worth checking now that
-waiting 50 seconds to find out is the wrong shape for the tool.
+**Then a perimeter lip.** Bolts hold the halves together; a step around the
+parting face stops them peeling apart between the bolts, which is where the
+last of the flashing comes from.
