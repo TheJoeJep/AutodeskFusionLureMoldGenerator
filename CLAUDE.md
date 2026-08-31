@@ -10,7 +10,8 @@ before touching the code or trying to install it for someone.
 An Autodesk Fusion add-in that turns a lure mesh into a printable two-part
 soft-plastic injection mold. Written and verified against Fusion **2704.1.53**.
 
-The user-facing guide is [README.md](README.md). Design reasoning lives in
+The user-facing guide is [README.md](README.md). What is still missing, and
+why it matters, is in [docs/ROADMAP.md](docs/ROADMAP.md). Design reasoning lives in
 [docs/superpowers/specs/](docs/superpowers/specs/). Failure modes and their
 causes are in [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — check there
 before debugging anything odd, most surprises are already documented.
