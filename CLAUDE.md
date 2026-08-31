@@ -99,7 +99,7 @@ order-dependent build steps. Extend it when you add a step whose order matters.
 ## Working on it
 
 ```bash
-python -m unittest discover -s tests -v          # 210 tests, stdlib only
+python -m unittest discover -s tests -v          # 216 tests, stdlib only
 powershell -ExecutionPolicy Bypass -File .\sync-addin.ps1
 ```
 
@@ -143,6 +143,11 @@ with no pegs at all.
 with the analysis. Use it for anything that asks "is this spot clear?", and
 `relief.geodesic_field()` for anything that asks "how far is this *through* the
 shape" -- that one drives vent placement.
+
+Picking features off a field, use **prominence**, not a height cutoff. A ridge
+produces a chain of local maxima that a cutoff cannot tell from a real peak,
+and any cutoff relative to the deepest point will discard shallow-but-genuine
+features. `relief.find_pockets()` does this properly.
 
 Distance transforms must stay **exact** (`relief.distance_field` uses the
 parabola-envelope method). A chamfer sweep was tried and its diagonal error put

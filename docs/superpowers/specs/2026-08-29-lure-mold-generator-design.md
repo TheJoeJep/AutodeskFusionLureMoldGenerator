@@ -51,7 +51,7 @@ LureMoldGenerator/
     ├── preview.py                CustomGraphics live overlay
     ├── store.py                  settings persisted on the lure body
     └── ui_command.py             command definition and event handlers
-tests/                            210 tests, stdlib unittest, no pytest,
+tests/                            216 tests, stdlib unittest, no pytest,
 ├── test_layout.py                all run OUTSIDE Fusion
 ├── test_meshgen.py
 ├── test_orient.py
@@ -255,12 +255,31 @@ doubles back is further than it looks -- and the local maxima of that field are
 the last places to fill, which is precisely where air ends up. Each becomes a
 vent.
 
-Maxima are thinned so none land within `max(0.12 x size, 4mm)` of each other,
+**A local maximum alone is not a pocket.** Where a limb passes close to the
+gate, the fill field forms a ridge and every node along it is a maximum in its
+own 8-neighbourhood; a real figure produced a chain of five down one arm. What
+marks a genuine pocket is **topographic prominence** -- how far you must
+descend from a peak before you can climb to higher ground. A limb tip has tens
+of millimetres of it, a ridge ripple has 1.4mm. Prominence is computed by
+flooding downwards with a union-find, and the highest point of each shell is
+given unbounded prominence, as convention requires.
+
+The bar is `max(0.04 x size, 2.5mm)` -- **absolute, not a fraction of the
+deepest point.** A fraction was tried and dropped both hands off a figure: a
+raised arm passing near the gate has a shallow basin (6mm) yet still traps air,
+while the deepest pocket was 75mm away.
+
+Maxima are thinned so none land within `max(0.07 x size, 3mm)` of each other,
 and the thinning is applied to the *settled* positions: a raw maximum sits at
 the far **corner** of a limb tip rather than its centre, so each peak is
 replaced by the centroid of the near-maximal nodes around it. Checking
 separation before that settling let two vents end up 1.1mm apart on a real
-model.
+model. Settling floods the connected near-maximal patch rather than averaging
+over a radius, so it stops at the neck of a limb instead of drifting back into
+the body.
+
+The separation is deliberately small: at 0.12 the two feet of a real figure sat
+9.3mm apart and one was silently discarded as a duplicate.
 
 Each vent routes to the nearest block face it can reach; `Cavity.vents` is a
 list, with `vent`/`vent_entry` kept as properties for the primary one.
@@ -465,7 +484,7 @@ Every failure produces a specific, actionable message. No silent failures, no ge
 
 ## 10. Testing
 
-**210 tests, stdlib `unittest`, no dependencies, all outside Fusion.**
+**216 tests, stdlib `unittest`, no dependencies, all outside Fusion.**
 
 | File | Covers |
 |---|---|

@@ -27,6 +27,8 @@ import math
 MAX_NODES = 200000
 # Anything this far from a feature is "far away" as far as the field cares.
 FAR = 1.0e6
+# Default prominence bar, as a fraction of the deepest fill distance.
+PROMINENCE_FRACTION = 0.15
 
 
 class Grid:
@@ -300,86 +302,138 @@ def geodesic_field(grid, mask, sources):
     return field
 
 
-def find_pockets(grid, mask, field, min_separation, floor_fraction=0.25):
+def find_pockets(grid, mask, field, min_separation, min_prominence=None):
     """Where air ends up trapped: the last places in the cavity to fill.
 
-    Local maxima of the fill distance, taken deepest first and thinned so no
-    two land within `min_separation` of each other. Shallow ones are dropped
-    -- a bump a short way from the gate is not a pocket.
+    A local maximum on its own is not enough. Where a limb passes close to the
+    gate the fill field forms a ridge, and every node along it is a maximum in
+    its own 8-neighbourhood -- a real figure produced a chain of them down one
+    arm. What marks a genuine pocket is **prominence**: how far you must
+    descend from a peak before you can climb to higher ground. A limb tip has
+    metres of it; a ridge ripple has a fraction of a millimetre.
+
+    Prominence is computed by flooding downwards with a union-find: process
+    nodes highest first, and when two basins meet, the lower of their two peaks
+    is drowned at that level, so its prominence is fixed there and then.
+
+    Returns positions deepest first, thinned so none land within
+    `min_separation` of another.
     """
     width = grid.nx + 1
-    reachable = [v for v in field if v < FAR]
-    if not reachable:
+    order = [index for index, value in enumerate(field) if value < FAR]
+    if not order:
         return []
+    order.sort(key=lambda index: field[index], reverse=True)
 
-    deepest = max(reachable)
-    if deepest <= 0.0:
-        return []
-    floor = deepest * floor_fraction
+    if min_prominence is None:
+        min_prominence = PROMINENCE_FRACTION * field[order[0]]
 
-    candidates = []
-    for j in range(grid.ny + 1):
-        for i in range(grid.nx + 1):
-            index = j * width + i
-            value = field[index]
-            if value >= FAR or value < floor:
-                continue
-            peak = True
-            for dj in (-1, 0, 1):
-                for di in (-1, 0, 1):
-                    if di == 0 and dj == 0:
-                        continue
-                    ni, nj = i + di, j + dj
-                    if ni < 0 or nj < 0 or ni > grid.nx or nj > grid.ny:
-                        continue
-                    other = field[nj * width + ni]
-                    if other < FAR and other > value:
-                        peak = False
-                        break
-                if not peak:
-                    break
-            if peak:
-                candidates.append((value, grid.x(i), grid.y(j)))
+    size = len(field)
+    parent = [-1] * size      # -1 until the node has been flooded
+    summit = [0] * size       # basin root -> its highest node
+    prominence = {}
 
-    candidates.sort(reverse=True)
+    def find(a):
+        root = a
+        while parent[root] != root:
+            root = parent[root]
+        while parent[a] != root:   # path compression
+            parent[a], a = root, parent[a]
+        return root
 
-    # The single furthest node is usually a *corner* of a limb tip, not its
-    # centre -- a rectangular arm has its far corners further away than the
-    # middle of its end. Averaging the near-maximal nodes around each peak puts
-    # the vent on the centreline, which is where it belongs.
-    band = max(2.0 * grid.cell, 0.5)
+    for index in order:
+        value = field[index]
+        i = index % width
+        j = index // width
+        parent[index] = index
+        summit[index] = index
 
-    def settle(value, x, y):
-        total_x = total_y = 0.0
-        count = 0
-        reach = int(math.ceil(min_separation / grid.cell))
-        ci, cj = grid.nearest(x, y)
-        for dj in range(-reach, reach + 1):
-            for di in range(-reach, reach + 1):
-                ni, nj = ci + di, cj + dj
+        for dj in (-1, 0, 1):
+            for di in (-1, 0, 1):
+                if di == 0 and dj == 0:
+                    continue
+                ni, nj = i + di, j + dj
                 if ni < 0 or nj < 0 or ni > grid.nx or nj > grid.ny:
                     continue
-                other = field[nj * width + ni]
-                if other >= FAR or other < value - band:
+                neighbour = nj * width + ni
+                if parent[neighbour] < 0:
+                    continue  # lower down, not flooded yet
+
+                a = find(index)
+                b = find(neighbour)
+                if a == b:
                     continue
-                total_x += grid.x(ni)
-                total_y += grid.y(nj)
-                count += 1
+                peak_a, peak_b = summit[a], summit[b]
+                if field[peak_a] >= field[peak_b]:
+                    higher, lower = peak_a, peak_b
+                else:
+                    higher, lower = peak_b, peak_a
+                # The lower summit drowns at the level we have reached.
+                prominence.setdefault(lower, field[lower] - value)
+                parent[b] = a
+                summit[a] = higher
+
+    # By convention the highest point of a shell has unbounded prominence:
+    # there is no higher ground to reach, and it always needs a vent.
+    for index in order:
+        if parent[index] == index:
+            prominence[summit[index]] = FAR
+
+    candidates = sorted(
+        (
+            (field[index], index)
+            for index, height in prominence.items()
+            if height >= min_prominence
+        ),
+        reverse=True,
+    )
+
+    # A raw maximum sits at the far *corner* of a limb tip, not its centre.
+    # Take the centroid of the connected near-maximal patch around it, which
+    # stops at the neck of the limb instead of drifting back into the body.
+    band = max(3.0 * grid.cell, 1.0)
+
+    def settle(index):
+        value = field[index]
+        floor = value - band
+        seen = {index}
+        stack = [index]
+        total_x = total_y = 0.0
+        count = 0
+        while stack and count < 4000:
+            current = stack.pop()
+            ci, cj = current % width, current // width
+            total_x += grid.x(ci)
+            total_y += grid.y(cj)
+            count += 1
+            for dj in (-1, 0, 1):
+                for di in (-1, 0, 1):
+                    ni, nj = ci + di, cj + dj
+                    if ni < 0 or nj < 0 or ni > grid.nx or nj > grid.ny:
+                        continue
+                    other = nj * width + ni
+                    if other in seen:
+                        continue
+                    height = field[other]
+                    if height >= FAR or height < floor:
+                        continue
+                    seen.add(other)
+                    stack.append(other)
         if count == 0:
-            return x, y
+            return grid.x(index % width), grid.y(index // width)
         return total_x / count, total_y / count
 
     # Settle first, then check separation. The other way round, two peaks that
     # start far apart can drift onto nearly the same spot -- a real figure came
     # back with two vents 1.1mm from each other.
     chosen = []
-    for value, x, y in candidates:
-        sx, sy = settle(value, x, y)
+    for _, index in candidates:
+        x, y = settle(index)
         if any(
-            math.hypot(sx - px, sy - py) < min_separation for px, py in chosen
+            math.hypot(x - px, y - py) < min_separation for px, py in chosen
         ):
             continue
-        chosen.append((sx, sy))
+        chosen.append((x, y))
     return chosen
 
 

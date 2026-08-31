@@ -361,5 +361,89 @@ class TestPocketFinding(unittest.TestCase):
         self.assertEqual(depths, sorted(depths, reverse=True))
 
 
+class TestProminence(unittest.TestCase):
+    """A local maximum is not the same thing as a pocket.
+
+    Where a limb passes close to the gate, the fill field forms a ridge, and
+    every node along it is a local maximum in its own 8-neighbourhood. A real
+    figure produced a chain of them down one arm. What separates a genuine
+    pocket is prominence: how far you must descend from it before reaching
+    higher ground.
+    """
+
+    def figure(self, cell=0.5):
+        """A torso with two legs and two arms, roughly like a person."""
+        grid = relief.make_grid(-48, -26, 40, 26, cell)
+        mask = relief.new_mask(grid)
+        relief.mark_rect(grid, mask, 0.0, 0.0, 40.0, 20.0)     # torso
+        relief.mark_rect(grid, mask, -30.0, -6.0, 20.0, 8.0)   # leg
+        relief.mark_rect(grid, mask, -30.0, 6.0, 20.0, 8.0)    # leg
+        relief.mark_rect(grid, mask, 25.0, -14.0, 14.0, 8.0)   # arm
+        relief.mark_rect(grid, mask, 25.0, 14.0, 14.0, 8.0)    # arm
+        return grid, mask
+
+    def test_all_four_limbs_are_vented(self):
+        grid, mask = self.figure()
+        field = relief.geodesic_field(grid, mask, [(10.0, 0.0)])
+        pockets = relief.find_pockets(
+            grid, mask, field, min_separation=6.0, min_prominence=4.0
+        )
+        self.assertEqual(len(pockets), 4, f"expected 4 limb tips, got {pockets}")
+
+    def test_the_pockets_sit_at_the_limb_ends(self):
+        grid, mask = self.figure()
+        field = relief.geodesic_field(grid, mask, [(10.0, 0.0)])
+        pockets = relief.find_pockets(
+            grid, mask, field, min_separation=6.0, min_prominence=4.0
+        )
+        for want in [(-40.0, -6.0), (-40.0, 6.0), (32.0, -14.0), (32.0, 14.0)]:
+            best = min(
+                math.hypot(p[0] - want[0], p[1] - want[1]) for p in pockets
+            )
+            self.assertLess(best, 6.0, f"nothing near {want}: {pockets}")
+
+    def test_close_together_limbs_are_not_merged(self):
+        # The two legs are only 12mm apart centre to centre. A separation
+        # bigger than that would silently drop one of them, which is exactly
+        # what happened on a real model.
+        grid, mask = self.figure()
+        field = relief.geodesic_field(grid, mask, [(10.0, 0.0)])
+        pockets = relief.find_pockets(
+            grid, mask, field, min_separation=6.0, min_prominence=4.0
+        )
+        legs = [p for p in pockets if p[0] < -30.0]
+        self.assertEqual(len(legs), 2, f"both legs should vent: {pockets}")
+
+    def test_raising_the_prominence_bar_keeps_only_the_deepest(self):
+        grid, mask = self.figure()
+        field = relief.geodesic_field(grid, mask, [(10.0, 0.0)])
+        strict = relief.find_pockets(
+            grid, mask, field, min_separation=6.0, min_prominence=100.0
+        )
+        self.assertEqual(len(strict), 1)
+
+    def test_a_smooth_bar_has_no_spurious_extra_pockets(self):
+        grid = relief.make_grid(-30, -10, 30, 10, 0.5)
+        mask = relief.new_mask(grid)
+        relief.mark_rect(grid, mask, 0.0, 0.0, 50.0, 10.0)
+        field = relief.geodesic_field(grid, mask, [(-24.0, 0.0)])
+        pockets = relief.find_pockets(
+            grid, mask, field, min_separation=5.0, min_prominence=4.0
+        )
+        self.assertEqual(len(pockets), 1, f"a plain bar has one end: {pockets}")
+
+    def test_settling_does_not_drag_a_vent_off_its_limb(self):
+        grid, mask = self.figure()
+        field = relief.geodesic_field(grid, mask, [(10.0, 0.0)])
+        pockets = relief.find_pockets(
+            grid, mask, field, min_separation=6.0, min_prominence=4.0
+        )
+        for x, y in pockets:
+            self.assertTrue(
+                relief.marked_at(grid, mask, x, y),
+                f"vent at ({x:.1f}, {y:.1f}) is outside the cavity",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

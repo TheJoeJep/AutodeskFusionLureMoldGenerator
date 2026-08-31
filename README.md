@@ -158,8 +158,12 @@ measured *through* the cavity, not straight-line -- and the last places to fill
 are the local maxima of that distance. Those are exactly where air ends up, so
 that is where the vents go.
 
-Vents closer together than about 12% of the lure's size are treated as the same
-pocket, so a lumpy outline does not sprout a dozen of them.
+A local maximum on its own is not enough -- where a limb passes close to the
+gate the field forms a ridge, and every point along it looks like a maximum. A
+real pocket is distinguished by how far you have to descend from it before
+reaching higher ground: a limb tip has tens of millimetres, a ridge ripple has
+one. Anything shallower than about 2.5 mm is ignored, and vents closer than 7%
+of the lure's size merge.
 
 Each is routed along the parting line to the nearest face it can actually
 reach, so it opens up when the mold does and can be cleaned out. Only a cavity
@@ -277,7 +281,7 @@ dataclass fields. That catches renames, which is how a stale
 python -m unittest discover -s tests -v
 ```
 
-210 tests, no dependencies beyond the standard library.
+216 tests, no dependencies beyond the standard library.
 
 | File | Covers |
 |---|---|

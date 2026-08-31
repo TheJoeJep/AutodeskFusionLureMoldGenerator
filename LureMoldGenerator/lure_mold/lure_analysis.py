@@ -34,9 +34,17 @@ UNDERCUT_REPORT_THRESHOLD = 0.02
 # Fine enough to resolve a limb, coarse enough to stay quick.
 FOOTPRINT_CELLS = 160
 FOOTPRINT_PAD = 30.0
-# Two vents closer together than this are treated as the same pocket.
-VENT_SEPARATION_FRACTION = 0.12
-MIN_VENT_SEPARATION = 4.0
+# Two vents closer together than this are treated as the same pocket. Kept
+# small deliberately: at 0.12 the two feet of a real figure sat 9.3mm apart and
+# one of them was silently discarded as a duplicate.
+VENT_SEPARATION_FRACTION = 0.07
+MIN_VENT_SEPARATION = 3.0
+# How deep a basin has to be before it counts as a pocket. An absolute figure,
+# not a fraction of the deepest: a raised arm passing close to the gate has a
+# shallow basin but still traps air, whereas the ridge a limb casts alongside
+# itself is under a couple of millimetres.
+VENT_PROMINENCE_FRACTION = 0.04
+MIN_VENT_PROMINENCE = 2.5
 
 
 class LureError(Exception):
@@ -95,7 +103,11 @@ class OrientedLure:
                 self._footprint_grid, self._footprint_mask, [(gate_x, 0.0)]
             )
             points = relief.find_pockets(
-                self._footprint_grid, self._footprint_mask, field, separation
+                self._footprint_grid, self._footprint_mask, field, separation,
+                min_prominence=max(
+                    VENT_PROMINENCE_FRACTION * max(self.length, self.height),
+                    MIN_VENT_PROMINENCE,
+                ),
             )
 
         self._vent_cache[key] = points
