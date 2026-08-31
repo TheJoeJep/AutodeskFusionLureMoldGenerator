@@ -61,7 +61,11 @@ class TestDataclassAttributesExist(unittest.TestCase):
             self.assertTrue(os.path.isfile(path), f"missing {filename}")
 
             for variable, cls in BINDINGS.items():
+                # Properties are real attributes too, not just dataclass fields.
                 fields = {f.name for f in dataclasses.fields(cls)}
+                fields |= {
+                    name for name in dir(cls) if not name.startswith("_")
+                }
                 for attr in attributes_used(path, variable):
                     self.assertIn(
                         attr,

@@ -176,6 +176,18 @@ def scaled_footprint(lure, scaled_length):
     return distance
 
 
+def scaled_vent_points(lure, settings, scaled_length):
+    """Where each trapped pocket is, scaled with the lure. None if vents off."""
+    if not settings.vents_enabled:
+        return None
+    nose = lure.nose_at_positive_x != settings.flip_lure
+    points = lure.vent_points(nose)
+    if not points:
+        return None
+    factor = scaled_length / lure.length if lure.length > 0 else 1.0
+    return [(x * factor, y * factor) for x, y in points]
+
+
 def resolve_parting(settings, lure, scaled_length):
     """Fill in the automatic parting offset, scaled with the lure."""
     if not getattr(settings, "parting_auto", True):
@@ -248,17 +260,17 @@ def apply_relief(component, plan, settings, lure_coords, lure_indices):
                 relief.mark_disc(grid, mask, cavity.sprue.x, cavity.sprue.y,
                                  settings.funnel_diameter / 2)
 
-        if cavity.vent is not None:
-            if cavity.vent_entry is not None:
+        for vent in cavity.vents:
+            if vent.entry is not None:
                 relief.mark_rect(
                     grid, mask,
-                    (cavity.vent.x + cavity.vent_entry.x) / 2,
-                    (cavity.vent.y + cavity.vent_entry.y) / 2,
-                    abs(cavity.vent_entry.x - cavity.vent.x) + settings.vent_diameter,
-                    abs(cavity.vent_entry.y - cavity.vent.y) + settings.vent_diameter,
+                    (vent.point.x + vent.entry.x) / 2,
+                    (vent.point.y + vent.entry.y) / 2,
+                    abs(vent.entry.x - vent.point.x) + settings.vent_diameter,
+                    abs(vent.entry.y - vent.point.y) + settings.vent_diameter,
                 )
             else:
-                relief.mark_disc(grid, mask, cavity.vent.x, cavity.vent.y,
+                relief.mark_disc(grid, mask, vent.point.x, vent.point.y,
                                  settings.vent_diameter / 2)
 
     if plan.runner is not None:
@@ -324,7 +336,9 @@ def build(design, lure_body, settings):
 
     settings = resolve_parting(settings, lure, length)
     plan = layout_mod.compute_layout(
-        dims, settings, cavity_distance=scaled_footprint(lure, length)
+        dims, settings,
+        cavity_distance=scaled_footprint(lure, length),
+        vent_points=scaled_vent_points(lure, settings, length),
     )
     warnings = list(prep_notes) + list(plan.warnings)
 
@@ -364,14 +378,35 @@ def build(design, lure_body, settings):
     pins = []
     holes = []
     for n, peg in enumerate(plan.pegs):
-        pin_coords, pin_idx = meshgen.cylinder(
-            peg.x, peg.y, 0.0, settings.peg_height, peg_radius, ROUND_SEGMENTS
+        # A lead-in chamfer on both halves of the pair: the pin tip tapers
+        # in, the hole mouth flares out, so they find each other instead of
+        # catching on a printed edge.
+        chamfer = max(min(getattr(settings, "peg_chamfer", 0.0),
+                          peg_radius * 0.6, settings.peg_height * 0.4), 0.0)
+
+        pin_profile = [(0.0, 0.0), (peg_radius, 0.0)]
+        if chamfer > 0:
+            pin_profile += [
+                (peg_radius, settings.peg_height - chamfer),
+                (peg_radius - chamfer, settings.peg_height),
+            ]
+        else:
+            pin_profile.append((peg_radius, settings.peg_height))
+        pin_profile.append((0.0, settings.peg_height))
+
+        pin_coords, pin_idx = meshgen.lathe(
+            peg.x, peg.y, pin_profile, ROUND_SEGMENTS
         )
         pins.append(_add_mesh(component, pin_coords, pin_idx, "peg_pin_%d" % n))
 
-        hole_coords, hole_idx = meshgen.cylinder(
-            peg.x, peg.y, -0.01,
-            settings.peg_height + PEG_HOLE_RELIEF, hole_radius, ROUND_SEGMENTS,
+        hole_depth = settings.peg_height + PEG_HOLE_RELIEF
+        hole_profile = [(0.0, -0.01), (hole_radius + chamfer, -0.01)]
+        if chamfer > 0:
+            hole_profile.append((hole_radius, chamfer))
+        hole_profile += [(hole_radius, hole_depth), (0.0, hole_depth)]
+
+        hole_coords, hole_idx = meshgen.lathe(
+            peg.x, peg.y, hole_profile, ROUND_SEGMENTS
         )
         holes.append(_add_mesh(component, hole_coords, hole_idx, "peg_hole_%d" % n))
 
@@ -444,24 +479,25 @@ def build(design, lure_body, settings):
                     _add_mesh(component, coords, idx, "sprue_top_%d" % n)
                 )
 
-        if cavity.vent is not None:
-            if cavity.vent_entry is not None:
+        for v, vent in enumerate(cavity.vents):
+            if vent.entry is not None:
                 edge_vents.append(
                     channel(
-                        cavity.vent, cavity.vent_entry,
+                        vent.point, vent.entry,
                         settings.vent_diameter / 2,
                         settings.vent_diameter / 2,
-                        "vent_edge_%d" % n,
+                        "vent_edge_%d_%d" % (n, v),
                         breakout=True,
                     )
                 )
             else:
                 vent_coords, vent_idx = meshgen.cylinder(
-                    cavity.vent.x, cavity.vent.y, 0.0, top_t,
+                    vent.point.x, vent.point.y, 0.0, top_t,
                     settings.vent_diameter / 2, ROUND_SEGMENTS,
                 )
                 vents.append(
-                    _add_mesh(component, vent_coords, vent_idx, "vent_top_%d" % n)
+                    _add_mesh(component, vent_coords, vent_idx,
+                              "vent_top_%d_%d" % (n, v))
                 )
 
     # --- the central runner, if there is one -----------------------------

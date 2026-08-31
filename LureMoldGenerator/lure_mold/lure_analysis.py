@@ -20,6 +20,8 @@ from . import relief
 from . import orient
 
 CM_TO_MM = 10.0
+# Matches layout.SPRUE_INSET_FRACTION: where the gate meets the cavity.
+SPRUE_INSET_FRACTION = 0.15
 
 # Fraction of the length at each end sampled when deciding which end is the nose.
 NOSE_SAMPLE_FRACTION = 0.15
@@ -32,6 +34,9 @@ UNDERCUT_REPORT_THRESHOLD = 0.02
 # Fine enough to resolve a limb, coarse enough to stay quick.
 FOOTPRINT_CELLS = 160
 FOOTPRINT_PAD = 30.0
+# Two vents closer together than this are treated as the same pocket.
+VENT_SEPARATION_FRACTION = 0.12
+MIN_VENT_SEPARATION = 4.0
 
 
 class LureError(Exception):
@@ -45,7 +50,7 @@ class OrientedLure:
                  nose_at_positive_x, axes, center_mm, repaired_faces=0,
                  volume_mm3=0.0, suggested_parting_mm=0.0, parting_score=0.0,
                  centred_parting_score=0.0, footprint_grid=None,
-                 footprint_field=None):
+                 footprint_field=None, footprint_mask=None):
         self.coords_mm = coords_mm
         self.indices = indices
         self.length = length
@@ -61,6 +66,40 @@ class OrientedLure:
         self.centred_parting_score = centred_parting_score
         self._footprint_grid = footprint_grid
         self._footprint_field = footprint_field
+        self._footprint_mask = footprint_mask
+        self._vent_cache = {}
+
+    def vent_points(self, nose_at_positive_x):
+        """Every spot in the cavity where air ends up trapped, in local mm.
+
+        One vent per cavity is not enough for anything with limbs: a figure
+        with four raised arms and legs traps air at each one. Filling is
+        simulated from the gate, and the last places to fill -- the local
+        maxima of distance measured *through* the shape -- are what need
+        venting.
+        """
+        key = bool(nose_at_positive_x)
+        if key in self._vent_cache:
+            return self._vent_cache[key]
+
+        points = []
+        if self._footprint_grid is not None and self.length > 0:
+            gate_x = (1.0 if key else -1.0) * (
+                self.length / 2 - SPRUE_INSET_FRACTION * self.length
+            )
+            separation = max(
+                VENT_SEPARATION_FRACTION * max(self.length, self.height),
+                MIN_VENT_SEPARATION,
+            )
+            field = relief.geodesic_field(
+                self._footprint_grid, self._footprint_mask, [(gate_x, 0.0)]
+            )
+            points = relief.find_pockets(
+                self._footprint_grid, self._footprint_mask, field, separation
+            )
+
+        self._vent_cache[key] = points
+        return points
 
     def footprint_distance(self, dx, dy):
         """How far a point is from the lure's real outline, in mm.
@@ -182,7 +221,7 @@ def analyze(mesh_body):
     centred = parting.score_at(columns, 0.0)
 
     cell = max(length, height) / FOOTPRINT_CELLS
-    grid, field = relief.silhouette_field(
+    grid, field, footprint = relief.silhouette_field(
         coords_mm, indices, FOOTPRINT_PAD, max(cell, 0.2)
     )
 
@@ -202,6 +241,7 @@ def analyze(mesh_body):
         centred_parting_score=centred,
         footprint_grid=grid,
         footprint_field=field,
+        footprint_mask=footprint,
     )
 
 

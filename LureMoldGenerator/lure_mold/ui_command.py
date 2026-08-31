@@ -95,6 +95,7 @@ def _read_settings(inputs):
         peg_diameter=_mm(inputs.itemById("pegDiameter")),
         peg_height=_mm(inputs.itemById("pegHeight")),
         peg_clearance=_mm(inputs.itemById("pegClearance")),
+        peg_chamfer=_mm(inputs.itemById("pegChamfer")),
         sprue_diameter=_mm(inputs.itemById("sprueDiameter")),
         funnel_diameter=_mm(inputs.itemById("funnelDiameter")),
         injection_mode=_read_injection_mode(inputs),
@@ -154,6 +155,7 @@ def _plan_for(inputs):
     plan = layout.compute_layout(
         dims, settings,
         cavity_distance=mold_builder.scaled_footprint(info, length),
+        vent_points=mold_builder.scaled_vent_points(info, settings, length),
     )
     return plan, settings, (length, height, thickness)
 
@@ -366,6 +368,7 @@ def _apply_settings(inputs, settings):
     inputs.itemById("pegDiameter").value = settings.peg_diameter * MM
     inputs.itemById("pegHeight").value = settings.peg_height * MM
     inputs.itemById("pegClearance").value = settings.peg_clearance * MM
+    inputs.itemById("pegChamfer").value = settings.peg_chamfer * MM
     inputs.itemById("sprueDiameter").value = settings.sprue_diameter * MM
     inputs.itemById("funnelDiameter").value = settings.funnel_diameter * MM
     for item in inputs.itemById("injectionMode").listItems:
@@ -441,6 +444,8 @@ class _CreatedHandler(adsk.core.CommandCreatedEventHandler):
             value(peg_group, "pegDiameter", "Diameter", defaults.peg_diameter)
             value(peg_group, "pegHeight", "Height", defaults.peg_height)
             value(peg_group, "pegClearance", "Fit clearance", defaults.peg_clearance)
+            value(peg_group, "pegChamfer", "Lead-in chamfer",
+                  defaults.peg_chamfer)
 
             inject_group = inputs.addGroupCommandInput(
                 "injectGroup", "Injection"

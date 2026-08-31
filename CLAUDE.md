@@ -99,7 +99,7 @@ order-dependent build steps. Extend it when you add a step whose order matters.
 ## Working on it
 
 ```bash
-python -m unittest discover -s tests -v          # 191 tests, stdlib only
+python -m unittest discover -s tests -v          # 210 tests, stdlib only
 powershell -ExecutionPolicy Bypass -File .\sync-addin.ps1
 ```
 
@@ -140,7 +140,13 @@ land and peg placement rejected corners that were wide open, producing molds
 with no pegs at all.
 
 `relief.silhouette_field()` gives distance to the real outline and is cached
-with the analysis. Use it for anything that asks "is this spot clear?".
+with the analysis. Use it for anything that asks "is this spot clear?", and
+`relief.geodesic_field()` for anything that asks "how far is this *through* the
+shape" -- that one drives vent placement.
+
+Distance transforms must stay **exact** (`relief.distance_field` uses the
+parabola-envelope method). A chamfer sweep was tried and its diagonal error put
+visible octagonal ridges down the relief slope.
 
 ---
 

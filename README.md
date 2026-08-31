@@ -96,6 +96,7 @@ rather keep them separate to hide one and inspect the other.
 | Alignment pegs | Number of pegs | 2 |
 | Alignment pegs | Diameter / Height | 5 mm |
 | Alignment pegs | Fit clearance | 0.2 mm |
+| Alignment pegs | Lead-in chamfer | 0.6 mm |
 | Injection | Injection port | Edge |
 | Injection | Sprue diameter | 4 mm |
 | Injection | Funnel diameter | 8 mm |
@@ -150,11 +151,20 @@ Four choices, and the default matches how commercial molds are actually built:
 
 ### Vents
 
-Always routed along the parting line where possible, so they open up when the
-mold does and can be cleaned out. Preference order: the tail's own end face,
-then sideways out of the nearest Y face, and only a cavity boxed in on every
-side falls back to a vertical riser -- with a warning, because a riser is a
-blind hole full of set plastic.
+**Every pocket gets its own vent, not just the tail.** A figure with four
+raised limbs traps air at each one; a single vent at the far end would leave
+three short shots. Filling is simulated from the gate outward -- distance
+measured *through* the cavity, not straight-line -- and the last places to fill
+are the local maxima of that distance. Those are exactly where air ends up, so
+that is where the vents go.
+
+Vents closer together than about 12% of the lure's size are treated as the same
+pocket, so a lumpy outline does not sprout a dozen of them.
+
+Each is routed along the parting line to the nearest face it can actually
+reach, so it opens up when the mold does and can be cleaned out. Only a cavity
+boxed in on every side falls back to a vertical riser -- with a warning,
+because a riser is a blind hole full of set plastic.
 
 The injection mode governs the sprue, not the vent.
 
@@ -183,6 +193,11 @@ margins a 4 mm land leaves only a narrow band. You get a warning when it does
 not fit.
 
 ### Alignment pegs
+
+Pin and hole both get a lead-in chamfer so they find each other instead of
+catching on a printed edge, and the hole is **Fit clearance** wider than the
+pin -- 0.2 mm on the diameter by default, so 0.1 mm per side. That is tight for
+FDM; 0.3-0.4 mm is more forgiving once you have test-printed.
 
 Two pegs go to diagonally opposite corners; four go to all four corners. Any
 position colliding with a cavity, an injection sprue, a vent or the runner is
@@ -262,7 +277,7 @@ dataclass fields. That catches renames, which is how a stale
 python -m unittest discover -s tests -v
 ```
 
-191 tests, no dependencies beyond the standard library.
+210 tests, no dependencies beyond the standard library.
 
 | File | Covers |
 |---|---|

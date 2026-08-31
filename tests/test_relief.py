@@ -203,5 +203,163 @@ class TestTerrainMesh(unittest.TestCase):
             self.assertAlmostEqual(z, 0.0, places=6)
 
 
+class TestDistanceIsIsotropic(unittest.TestCase):
+    """The slope is only as smooth as the distance field under it.
+
+    A chamfer sweep measures diagonals badly, so contours come out octagonal
+    and the relief ramp gets visible ridges. An exact Euclidean transform
+    fixes it at the root.
+    """
+
+    def field_around_disc(self, cell=0.5):
+        grid = relief.make_grid(-30, -30, 30, 30, cell)
+        mask = relief.new_mask(grid)
+        relief.mark_disc(grid, mask, 0.0, 0.0, 4.0)
+        return grid, relief.distance_field(grid, mask)
+
+    def test_distance_is_the_same_in_every_direction(self):
+        grid, field = self.field_around_disc()
+        readings = []
+        for degrees in range(0, 360, 15):
+            angle = math.radians(degrees)
+            readings.append(
+                relief.sample(grid, field,
+                              15.0 * math.cos(angle), 15.0 * math.sin(angle))
+            )
+        spread = max(readings) - min(readings)
+        self.assertLess(
+            spread, 0.5,
+            f"distance varies by {spread:.2f}mm around a circle -- anisotropic",
+        )
+
+    def test_the_diagonal_is_not_over_measured(self):
+        grid, field = self.field_around_disc()
+        straight = relief.sample(grid, field, 20.0, 0.0)
+        diagonal = relief.sample(
+            grid, field, 20.0 / math.sqrt(2), 20.0 / math.sqrt(2)
+        )
+        self.assertLess(abs(straight - diagonal), 0.5)
+
+    def test_distance_matches_the_analytic_value_closely(self):
+        grid, field = self.field_around_disc(cell=0.4)
+        for radius in (8.0, 14.0, 22.0):
+            measured = relief.sample(grid, field, radius, 0.0)
+            self.assertLess(
+                abs(measured - (radius - 4.0)), 0.5,
+                f"at r={radius} expected about {radius - 4.0}, got {measured}",
+            )
+
+    def test_a_square_still_measures_correctly_off_its_corner(self):
+        grid = relief.make_grid(-30, -30, 30, 30, 0.4)
+        mask = relief.new_mask(grid)
+        relief.mark_rect(grid, mask, 0.0, 0.0, 10.0, 10.0)
+        field = relief.distance_field(grid, mask)
+        # 10mm diagonally out from the corner at (5, 5).
+        step = 10.0 / math.sqrt(2)
+        measured = relief.sample(grid, field, 5.0 + step, 5.0 + step)
+        self.assertLess(abs(measured - 10.0), 0.5)
+
+
+class TestPocketFinding(unittest.TestCase):
+    """Air gets trapped at every dead end, not just the far tip.
+
+    A figure with four raised limbs needs a vent at each one. Filling from the
+    gate, the last places to fill are the local maxima of distance measured
+    *through* the shape -- so that is what gets vented.
+    """
+
+    def cross(self, cell=0.5):
+        """A plus sign: four arms 20mm long, 8mm wide."""
+        grid = relief.make_grid(-30, -30, 30, 30, cell)
+        mask = relief.new_mask(grid)
+        relief.mark_rect(grid, mask, 0.0, 0.0, 44.0, 8.0)
+        relief.mark_rect(grid, mask, 0.0, 0.0, 8.0, 44.0)
+        return grid, mask
+
+    def test_filling_distance_grows_along_an_arm(self):
+        grid, mask = self.cross()
+        field = relief.geodesic_field(grid, mask, [(-22.0, 0.0)])
+        near = relief.sample(grid, field, -10.0, 0.0)
+        far = relief.sample(grid, field, 20.0, 0.0)
+        self.assertGreater(far, near)
+
+    def test_filling_distance_goes_around_the_shape_not_through_the_air(self):
+        # The tip of the top arm is 22mm away as the crow flies, but the melt
+        # has to travel out along the arm, so further.
+        grid, mask = self.cross()
+        field = relief.geodesic_field(grid, mask, [(-22.0, 0.0)])
+        self.assertGreater(relief.sample(grid, field, 0.0, 20.0), 30.0)
+
+    def test_every_dead_end_is_found(self):
+        grid, mask = self.cross()
+        field = relief.geodesic_field(grid, mask, [(-22.0, 0.0)])
+        pockets = relief.find_pockets(grid, mask, field, min_separation=10.0)
+        self.assertEqual(len(pockets), 3, f"expected 3 arm tips, got {pockets}")
+
+    def test_the_pockets_are_at_the_arm_tips(self):
+        grid, mask = self.cross()
+        field = relief.geodesic_field(grid, mask, [(-22.0, 0.0)])
+        pockets = relief.find_pockets(grid, mask, field, min_separation=10.0)
+        expected = [(22.0, 0.0), (0.0, 22.0), (0.0, -22.0)]
+        for want in expected:
+            best = min(
+                math.hypot(p[0] - want[0], p[1] - want[1]) for p in pockets
+            )
+            self.assertLess(best, 4.0, f"nothing found near {want}: {pockets}")
+
+    def test_the_gate_end_is_not_itself_a_pocket(self):
+        grid, mask = self.cross()
+        field = relief.geodesic_field(grid, mask, [(-22.0, 0.0)])
+        pockets = relief.find_pockets(grid, mask, field, min_separation=10.0)
+        for x, y in pockets:
+            self.assertGreater(math.hypot(x + 22.0, y), 8.0)
+
+    def test_a_simple_bar_has_a_single_pocket(self):
+        grid = relief.make_grid(-30, -10, 30, 10, 0.5)
+        mask = relief.new_mask(grid)
+        relief.mark_rect(grid, mask, 0.0, 0.0, 50.0, 8.0)
+        field = relief.geodesic_field(grid, mask, [(-24.0, 0.0)])
+        pockets = relief.find_pockets(grid, mask, field, min_separation=10.0)
+        self.assertEqual(len(pockets), 1)
+        self.assertGreater(pockets[0][0], 18.0)
+
+    def test_separation_merges_pockets_that_are_close_together(self):
+        grid, mask = self.cross()
+        field = relief.geodesic_field(grid, mask, [(-22.0, 0.0)])
+        loose = relief.find_pockets(grid, mask, field, min_separation=60.0)
+        self.assertEqual(len(loose), 1)
+
+
+    def test_no_two_pockets_end_up_closer_than_the_separation(self):
+        """The separation must hold for the positions actually returned.
+
+        Checking it before the centroid settling is not enough: two peaks that
+        start far apart can settle onto nearly the same spot, and a real figure
+        came back with vents 1.1mm apart.
+        """
+        grid, mask = self.cross(cell=0.4)
+        field = relief.geodesic_field(grid, mask, [(-22.0, 0.0)])
+        for separation in (6.0, 10.0, 18.0):
+            pockets = relief.find_pockets(grid, mask, field, separation)
+            for a in range(len(pockets)):
+                for b in range(a + 1, len(pockets)):
+                    gap = math.hypot(
+                        pockets[a][0] - pockets[b][0],
+                        pockets[a][1] - pockets[b][1],
+                    )
+                    self.assertGreaterEqual(
+                        gap, separation - 1e-6,
+                        f"pockets {pockets[a]} and {pockets[b]} are {gap:.2f}mm "
+                        f"apart, closer than {separation}",
+                    )
+
+    def test_pockets_come_back_deepest_first(self):
+        grid, mask = self.cross()
+        field = relief.geodesic_field(grid, mask, [(-22.0, 0.0)])
+        pockets = relief.find_pockets(grid, mask, field, min_separation=10.0)
+        depths = [relief.sample(grid, field, x, y) for x, y in pockets]
+        self.assertEqual(depths, sorted(depths, reverse=True))
+
+
 if __name__ == "__main__":
     unittest.main()

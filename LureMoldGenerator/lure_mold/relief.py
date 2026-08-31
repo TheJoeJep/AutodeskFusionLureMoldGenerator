@@ -151,47 +151,236 @@ def mark_triangles(grid, mask, coords, indices, dx=0.0, dy=0.0):
                     mask[index] = 1
 
 
-def distance_field(grid, mask):
-    """Distance from every node to the nearest marked one.
+_BIG = 1.0e12
 
-    A two-pass chamfer sweep: cheap, and accurate to a couple of percent,
-    which is far finer than the ramp it feeds.
+
+def _squared_1d(values):
+    """Felzenszwalb and Huttenlocher's 1D squared-distance transform.
+
+    Lower envelope of the parabolas rooted at each sample. Linear time, and
+    exact -- which is the whole point of using it.
     """
-    nx, ny, cell = grid.nx, grid.ny, grid.cell
-    straight = cell
-    diagonal = cell * math.sqrt(2.0)
-    field = [0.0 if value else FAR for value in mask]
-    width = nx + 1
+    n = len(values)
+    if n == 0:
+        return []
 
-    for j in range(ny + 1):
-        for i in range(width):
-            index = j * width + i
-            best = field[index]
-            if i > 0:
-                best = min(best, field[index - 1] + straight)
-            if j > 0:
-                best = min(best, field[index - width] + straight)
-                if i > 0:
-                    best = min(best, field[index - width - 1] + diagonal)
-                if i < nx:
-                    best = min(best, field[index - width + 1] + diagonal)
-            field[index] = best
+    out = [0.0] * n
+    hull = [0] * n            # which parabola is lowest in each stretch
+    boundary = [0.0] * (n + 1)  # where the lowest parabola changes
+    k = 0
+    hull[0] = 0
+    boundary[0] = -_BIG
+    boundary[1] = _BIG
 
-    for j in range(ny, -1, -1):
-        for i in range(nx, -1, -1):
-            index = j * width + i
-            best = field[index]
-            if i < nx:
-                best = min(best, field[index + 1] + straight)
-            if j < ny:
-                best = min(best, field[index + width] + straight)
-                if i < nx:
-                    best = min(best, field[index + width + 1] + diagonal)
-                if i > 0:
-                    best = min(best, field[index + width - 1] + diagonal)
-            field[index] = best
+    for q in range(1, n):
+        while True:
+            p = hull[k]
+            crossing = ((values[q] + q * q) - (values[p] + p * p)) / (2.0 * q - 2.0 * p)
+            if crossing <= boundary[k]:
+                k -= 1
+                if k < 0:
+                    k = 0
+                    hull[0] = q
+                    boundary[0] = -_BIG
+                    boundary[1] = _BIG
+                    break
+                continue
+            k += 1
+            hull[k] = q
+            boundary[k] = crossing
+            boundary[k + 1] = _BIG
+            break
+
+    k = 0
+    for q in range(n):
+        while boundary[k + 1] < q:
+            k += 1
+        offset = q - hull[k]
+        out[q] = offset * offset + values[hull[k]]
+    return out
+
+
+def distance_field(grid, mask):
+    """Exact Euclidean distance from every node to the nearest marked one.
+
+    This started as a two-pass chamfer sweep, which is cheaper but measures
+    diagonals badly: distance varied by over a millimetre around a circle,
+    giving the contours an octagonal bias that showed up as visible ridges
+    down the relief slope. An exact transform is barely slower and the ramp
+    comes out smooth.
+    """
+    width = grid.nx + 1
+    height = grid.ny + 1
+
+    squared = [0.0 if value else _BIG for value in mask]
+
+    for j in range(height):
+        row = j * width
+        squared[row:row + width] = _squared_1d(squared[row:row + width])
+
+    for i in range(width):
+        column = _squared_1d([squared[j * width + i] for j in range(height)])
+        for j in range(height):
+            squared[j * width + i] = column[j]
+
+    cell = grid.cell
+    return [
+        FAR if value >= _BIG else math.sqrt(value) * cell for value in squared
+    ]
+
+
+def geodesic_field(grid, mask, sources):
+    """Distance from the gate to every part of the cavity, measured through it.
+
+    Not straight-line distance: the melt has to travel along the shape, so a
+    limb doubling back is further away than it looks. Dijkstra over the marked
+    nodes with eight-way steps.
+
+    Unreachable and unmarked nodes come back as FAR.
+    """
+    import heapq
+
+    width = grid.nx + 1
+    height = grid.ny + 1
+    field = [FAR] * (width * height)
+
+    straight = grid.cell
+    diagonal = grid.cell * math.sqrt(2.0)
+    steps = (
+        (1, 0, straight), (-1, 0, straight),
+        (0, 1, straight), (0, -1, straight),
+        (1, 1, diagonal), (1, -1, diagonal),
+        (-1, 1, diagonal), (-1, -1, diagonal),
+    )
+
+    queue = []
+    for x, y in sources:
+        i, j = grid.nearest(x, y)
+        # Snap onto the shape if the gate sits just outside it.
+        if not mask[grid.index(i, j)]:
+            found = None
+            for radius in range(1, 12):
+                for dj in range(-radius, radius + 1):
+                    for di in range(-radius, radius + 1):
+                        ni, nj = i + di, j + dj
+                        if 0 <= ni <= grid.nx and 0 <= nj <= grid.ny:
+                            if mask[grid.index(ni, nj)]:
+                                found = (ni, nj)
+                                break
+                    if found:
+                        break
+                if found:
+                    break
+            if not found:
+                continue
+            i, j = found
+        index = grid.index(i, j)
+        if field[index] > 0.0:
+            field[index] = 0.0
+            heapq.heappush(queue, (0.0, index))
+
+    while queue:
+        distance, index = heapq.heappop(queue)
+        if distance > field[index]:
+            continue
+        i = index % width
+        j = index // width
+        for di, dj, cost in steps:
+            ni, nj = i + di, j + dj
+            if ni < 0 or nj < 0 or ni > grid.nx or nj > grid.ny:
+                continue
+            neighbour = nj * width + ni
+            if not mask[neighbour]:
+                continue
+            candidate = distance + cost
+            if candidate < field[neighbour]:
+                field[neighbour] = candidate
+                heapq.heappush(queue, (candidate, neighbour))
 
     return field
+
+
+def find_pockets(grid, mask, field, min_separation, floor_fraction=0.25):
+    """Where air ends up trapped: the last places in the cavity to fill.
+
+    Local maxima of the fill distance, taken deepest first and thinned so no
+    two land within `min_separation` of each other. Shallow ones are dropped
+    -- a bump a short way from the gate is not a pocket.
+    """
+    width = grid.nx + 1
+    reachable = [v for v in field if v < FAR]
+    if not reachable:
+        return []
+
+    deepest = max(reachable)
+    if deepest <= 0.0:
+        return []
+    floor = deepest * floor_fraction
+
+    candidates = []
+    for j in range(grid.ny + 1):
+        for i in range(grid.nx + 1):
+            index = j * width + i
+            value = field[index]
+            if value >= FAR or value < floor:
+                continue
+            peak = True
+            for dj in (-1, 0, 1):
+                for di in (-1, 0, 1):
+                    if di == 0 and dj == 0:
+                        continue
+                    ni, nj = i + di, j + dj
+                    if ni < 0 or nj < 0 or ni > grid.nx or nj > grid.ny:
+                        continue
+                    other = field[nj * width + ni]
+                    if other < FAR and other > value:
+                        peak = False
+                        break
+                if not peak:
+                    break
+            if peak:
+                candidates.append((value, grid.x(i), grid.y(j)))
+
+    candidates.sort(reverse=True)
+
+    # The single furthest node is usually a *corner* of a limb tip, not its
+    # centre -- a rectangular arm has its far corners further away than the
+    # middle of its end. Averaging the near-maximal nodes around each peak puts
+    # the vent on the centreline, which is where it belongs.
+    band = max(2.0 * grid.cell, 0.5)
+
+    def settle(value, x, y):
+        total_x = total_y = 0.0
+        count = 0
+        reach = int(math.ceil(min_separation / grid.cell))
+        ci, cj = grid.nearest(x, y)
+        for dj in range(-reach, reach + 1):
+            for di in range(-reach, reach + 1):
+                ni, nj = ci + di, cj + dj
+                if ni < 0 or nj < 0 or ni > grid.nx or nj > grid.ny:
+                    continue
+                other = field[nj * width + ni]
+                if other >= FAR or other < value - band:
+                    continue
+                total_x += grid.x(ni)
+                total_y += grid.y(nj)
+                count += 1
+        if count == 0:
+            return x, y
+        return total_x / count, total_y / count
+
+    # Settle first, then check separation. The other way round, two peaks that
+    # start far apart can drift onto nearly the same spot -- a real figure came
+    # back with two vents 1.1mm from each other.
+    chosen = []
+    for value, x, y in candidates:
+        sx, sy = settle(value, x, y)
+        if any(
+            math.hypot(sx - px, sy - py) < min_separation for px, py in chosen
+        ):
+            continue
+        chosen.append((sx, sy))
+    return chosen
 
 
 def sample(grid, field, x, y):
@@ -209,13 +398,13 @@ def silhouette_field(coords, indices, pad, cell):
     xs = coords[0::3]
     ys = coords[1::3]
     if not xs:
-        return None, None
+        return None, None, None
     grid = make_grid(
         min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad, cell
     )
     mask = new_mask(grid)
     mark_triangles(grid, mask, coords, indices)
-    return grid, distance_field(grid, mask)
+    return grid, distance_field(grid, mask), mask
 
 
 def height_at(distance, land, depth, run):

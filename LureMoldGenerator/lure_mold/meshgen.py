@@ -144,6 +144,54 @@ def cylinder(cx, cy, z0, z1, radius, segments=48):
     return cone(cx, cy, z0, radius, z1, radius, segments=segments)
 
 
+def lathe(cx, cy, profile, segments=48):
+    """A solid of revolution about the Z axis through (cx, cy).
+
+    `profile` is a list of (radius, z) running bottom to top, starting and
+    ending on the axis (radius 0). Used for pegs and peg holes, whose lead-in
+    chamfers are just a step in the profile.
+    """
+    if len(profile) < 3:
+        raise ValueError("a lathe profile needs at least three points")
+    if profile[0][0] > 1e-12 or profile[-1][0] > 1e-12:
+        raise ValueError("a lathe profile must start and end on the axis")
+    if segments < 3:
+        raise ValueError("a lathe needs at least 3 segments")
+
+    verts = []
+    rings = []
+    for radius, z in profile:
+        if radius <= 1e-12:
+            verts.append((cx, cy, z))
+            rings.append((None, len(verts) - 1))
+        else:
+            start = len(verts)
+            for j in range(segments):
+                angle = 2 * math.pi * j / segments
+                verts.append(
+                    (cx + radius * math.cos(angle), cy + radius * math.sin(angle), z)
+                )
+            rings.append((start, None))
+
+    faces = []
+    for n in range(len(rings) - 1):
+        lower, lower_point = rings[n]
+        upper, upper_point = rings[n + 1]
+        for j in range(segments):
+            k = (j + 1) % segments
+            if lower is None and upper is not None:
+                faces.append((lower_point, upper + k, upper + j))
+            elif lower is not None and upper is None:
+                faces.append((lower + j, lower + k, upper_point))
+            elif lower is not None and upper is not None:
+                faces.append((lower + j, lower + k, upper + j))
+                faces.append((lower + k, upper + k, upper + j))
+
+    coords = [c for v in verts for c in v]
+    indices = [i for f in faces for i in f]
+    return coords, indices
+
+
 def axis_z_to_x(coords):
     """Turn a Z-axis primitive into an X-axis one.
 

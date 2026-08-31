@@ -21,6 +21,7 @@ VENT_INSET_FRACTION = 0.05  # how far inboard from the tail tip the vent sits
 MIN_PRINTABLE_MARGIN = 2.0  # thinner walls than this will not print well
 MIN_PRINTABLE_VENT = 0.8  # narrower vents than this close up when printed
 LAYOUT_GAP = 10.0  # space left between the two halves when laid out flat
+MAX_VENTS_PER_CAVITY = 8  # a sanity bound, not a design limit
 # The relief ramp angle is clamped away from 0 and 90 degrees: at 0 the ramp
 # would be infinitely long, at 90 it would be a vertical step.
 MIN_RELIEF_ANGLE = 5.0
@@ -55,7 +56,8 @@ class MoldSettings:
     peg_count: int = 2
     peg_diameter: float = 5.0
     peg_height: float = 5.0
-    peg_clearance: float = 0.2
+    peg_clearance: float = 0.2  # added to the hole DIAMETER, so half per side
+    peg_chamfer: float = 0.6  # lead-in on the pin tip and the hole mouth
     sprue_diameter: float = 4.0
     funnel_diameter: float = 8.0
     # "edge" runs a channel along the parting line out through the block's
@@ -107,6 +109,14 @@ class Runner:
 
 
 @dataclass(frozen=True)
+class Vent:
+    """One vent. `entry` is where it breaks out, or None for a top riser."""
+
+    point: Point2
+    entry: Point2 | None
+
+
+@dataclass(frozen=True)
 class Cavity:
     center: Point2
     # True when this cavity is turned end-for-end so its nose faces the
@@ -118,10 +128,18 @@ class Cavity:
     # Where an edge channel breaks out of the block. None for top injection,
     # for no injection, or when this cavity has no clear run to an edge.
     sprue_entry: Point2 | None
-    # Where the vent meets the cavity, at the tail. None if vents are off.
-    vent: Point2 | None
-    # Where a vent channel breaks out. None when the vent is a top riser.
-    vent_entry: Point2 | None
+    # Every pocket that needs to breathe. A shape with several limbs traps
+    # air at each one, so one vent per cavity is not enough.
+    vents: tuple = ()
+
+    @property
+    def vent(self):
+        """The primary vent, for callers that only care about one."""
+        return self.vents[0].point if self.vents else None
+
+    @property
+    def vent_entry(self):
+        return self.vents[0].entry if self.vents else None
 
 
 @dataclass(frozen=True)
@@ -153,6 +171,30 @@ class MoldLayout:
     warnings: tuple
     bottom_placement: HalfPlacement
     top_placement: HalfPlacement
+
+
+def _nearest_face(point, column, row, settings, block_x, block_y):
+    """Where a vent at `point` should break out, or None if it cannot.
+
+    A channel can only escape through a face with nothing between it and the
+    cavity, which means the outermost column or row in that direction. Of the
+    faces that qualify, the nearest wins -- that keeps the channel short and,
+    for a tail vent on a single cavity, picks the end face as before.
+    """
+    options = []
+    if column == 0:
+        options.append((abs(point.x + block_x / 2), Point2(-block_x / 2, point.y)))
+    if column == settings.columns - 1:
+        options.append((abs(block_x / 2 - point.x), Point2(block_x / 2, point.y)))
+    if row == 0:
+        options.append((abs(point.y + block_y / 2), Point2(point.x, -block_y / 2)))
+    if row == settings.rows - 1:
+        options.append((abs(block_y / 2 - point.y), Point2(point.x, block_y / 2)))
+
+    if not options:
+        return None
+    options.sort(key=lambda pair: pair[0])
+    return options[0][1]
 
 
 def relief_run(depth, angle_degrees):
@@ -294,19 +336,20 @@ def _hits_port(point, cavities, settings, peg_radius):
             elif disc(cavity.sprue, radius):
                 return True
 
-        if cavity.vent is not None:
+        for vent in cavity.vents:
             radius = settings.vent_diameter / 2
-            if cavity.vent_entry is not None:
-                if band(cavity.vent, cavity.vent_entry, radius):
+            if vent.entry is not None:
+                if band(vent.point, vent.entry, radius):
                     return True
-            elif disc(cavity.vent, radius):
+            elif disc(vent.point, radius):
                 return True
 
     return False
 
 
 def compute_layout(
-    lure: LureDims, settings: MoldSettings, cavity_distance=None
+    lure: LureDims, settings: MoldSettings, cavity_distance=None,
+    vent_points=None,
 ) -> MoldLayout:
     """Compute the full mold layout from lure dimensions and user settings."""
     cell_x = lure.length + 2 * settings.margin_x
@@ -397,27 +440,28 @@ def compute_layout(
                     if mode == "edge":
                         blocked += 1
 
-            # A vent should lie on the parting line so it opens up when the
-            # mold does and can be cleaned out; a vertical riser is a blind
-            # hole full of set plastic. Try the tail's own face first, then
-            # sideways out of a Y face, and only fall back to a riser when the
-            # cavity is genuinely boxed in.
+            # A vent lies on the parting line so it opens up when the mold
+            # does and can be cleaned out; a vertical riser is a blind hole
+            # full of set plastic. Each pocket gets its own, routed to the
+            # nearest face it can actually reach.
+            vents = []
             if settings.vents_enabled:
-                vent = Point2(cx - sign * vent_offset, cy)
-                if runner is not None:
-                    vent_entry = Point2(-sign * block_x / 2, cy)
-                elif mode != "runner" and i == tail_column:
-                    vent_entry = Point2(tail_edge_x, cy)
-                elif j == 0:
-                    vent_entry = Point2(vent.x, -block_y / 2)
-                elif j == settings.rows - 1:
-                    vent_entry = Point2(vent.x, block_y / 2)
+                if vent_points:
+                    points = [
+                        Point2(cx - px, cy - py) if rotated
+                        else Point2(cx + px, cy + py)
+                        for px, py in vent_points[:MAX_VENTS_PER_CAVITY]
+                    ]
                 else:
-                    vent_entry = None
-                    boxed_in += 1
-            else:
-                vent = None
-                vent_entry = None
+                    points = [Point2(cx - sign * vent_offset, cy)]
+
+                for point in points:
+                    entry = _nearest_face(
+                        point, i, j, settings, block_x, block_y
+                    )
+                    if entry is None:
+                        boxed_in += 1
+                    vents.append(Vent(point=point, entry=entry))
 
             cavities.append(
                 Cavity(
@@ -425,8 +469,7 @@ def compute_layout(
                     rotated=rotated,
                     sprue=sprue,
                     sprue_entry=sprue_entry,
-                    vent=vent,
-                    vent_entry=vent_entry,
+                    vents=tuple(vents),
                 )
             )
     cavities = tuple(cavities)

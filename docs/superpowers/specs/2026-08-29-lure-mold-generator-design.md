@@ -51,7 +51,7 @@ LureMoldGenerator/
     ├── preview.py                CustomGraphics live overlay
     ├── store.py                  settings persisted on the lure body
     └── ui_command.py             command definition and event handlers
-tests/                            191 tests, stdlib unittest, no pytest,
+tests/                            210 tests, stdlib unittest, no pytest,
 ├── test_layout.py                all run OUTSIDE Fusion
 ├── test_meshgen.py
 ├── test_orient.py
@@ -243,6 +243,28 @@ cleaned; a riser is a blind hole full of set plastic.
 The injection mode governs the *sprue*, not the vent -- vents lie on the
 parting line even with top injection.
 
+### 6.5.1 One vent per trapped pocket
+
+*Changed during implementation.* Each cavity used to get a single vent at the
+tail. That is wrong for anything with limbs: a figure with four raised arms and
+legs traps air at each of them, and three would have come out short.
+
+Filling is simulated instead. A geodesic field is swept out from the gate
+through the cavity silhouette -- distance *through* the shape, so a limb that
+doubles back is further than it looks -- and the local maxima of that field are
+the last places to fill, which is precisely where air ends up. Each becomes a
+vent.
+
+Maxima are thinned so none land within `max(0.12 x size, 4mm)` of each other,
+and the thinning is applied to the *settled* positions: a raw maximum sits at
+the far **corner** of a limb tip rather than its centre, so each peak is
+replaced by the centroid of the near-maximal nodes around it. Checking
+separation before that settling let two vents end up 1.1mm apart on a real
+model.
+
+Each vent routes to the nearest block face it can reach; `Cavity.vents` is a
+list, with `vent`/`vent_entry` kept as properties for the primary one.
+
 ### 6.6 Where the mold splits
 
 The parting plane was originally fixed at the middle of the lure's bounding
@@ -324,6 +346,12 @@ it is subtracted from a plain block half and nothing ever has zero thickness.
 It is built for the bottom half and mirrored for the top, because deriving one
 winding and reflecting it is far less error-prone than keeping two consistent
 by hand.
+
+The distance transform is an **exact** Euclidean one (Felzenszwalb and
+Huttenlocher's parabola-envelope method), not the chamfer sweep used at first.
+A chamfer measures diagonals badly -- distance varied by 1.04mm around a circle
+-- which gave the contours an octagonal bias and put visible ridges down the
+slope. Exact is barely slower and the ramp comes out smooth.
 
 Cell size is the ramp width over three, clamped to 0.35-1.20mm, with a hard
 ceiling on node count. On a real mold that took the finished body from ~32k to
@@ -437,7 +465,7 @@ Every failure produces a specific, actionable message. No silent failures, no ge
 
 ## 10. Testing
 
-**191 tests, stdlib `unittest`, no dependencies, all outside Fusion.**
+**210 tests, stdlib `unittest`, no dependencies, all outside Fusion.**
 
 | File | Covers |
 |---|---|

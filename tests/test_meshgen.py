@@ -353,5 +353,57 @@ class TestBoxFrustum(unittest.TestCase):
         self.assertAlmostEqual(signed_volume(coords, indices), expected, places=6)
 
 
+class TestLathe(unittest.TestCase):
+    """A solid of revolution -- pegs and holes with lead-in chamfers."""
+
+    def test_a_cylinder_profile_matches_the_cylinder_primitive(self):
+        lathed = meshgen.lathe(0, 0, [(0, 0), (2, 0), (2, 5), (0, 5)], 64)
+        plain = meshgen.cylinder(0, 0, 0, 5, radius=2, segments=64)
+        self.assertAlmostEqual(
+            signed_volume(*lathed), signed_volume(*plain), places=6
+        )
+
+    def test_a_lathed_solid_is_watertight_and_outward_wound(self):
+        coords, indices = meshgen.lathe(
+            0, 0, [(0, 0), (3, 0), (3, 8), (2, 10), (0, 10)], 32
+        )
+        assert_watertight(self, coords, indices)
+        self.assertGreater(signed_volume(coords, indices), 0)
+
+    def test_a_chamfered_peg_loses_volume_at_the_tip(self):
+        straight = meshgen.lathe(0, 0, [(0, 0), (2.5, 0), (2.5, 5), (0, 5)], 64)
+        chamfered = meshgen.lathe(
+            0, 0, [(0, 0), (2.5, 0), (2.5, 4.4), (1.9, 5), (0, 5)], 64
+        )
+        self.assertLess(signed_volume(*chamfered), signed_volume(*straight))
+
+    def test_the_profile_governs_the_radius_at_each_height(self):
+        coords, _ = meshgen.lathe(
+            0, 0, [(0, 0), (5, 0), (5, 4), (2, 6), (0, 6)], 64
+        )
+        at_base = [
+            math.hypot(coords[i], coords[i + 1])
+            for i in range(0, len(coords), 3)
+            if abs(coords[i + 2]) < 1e-9
+        ]
+        at_top = [
+            math.hypot(coords[i], coords[i + 1])
+            for i in range(0, len(coords), 3)
+            if abs(coords[i + 2] - 6.0) < 1e-9
+        ]
+        self.assertAlmostEqual(max(at_base), 5.0, places=6)
+        self.assertAlmostEqual(max(at_top), 2.0, places=6)
+
+    def test_a_profile_is_positioned_in_xy(self):
+        coords, _ = meshgen.lathe(7, -3, [(0, 0), (2, 0), (2, 4), (0, 4)], 32)
+        (x0, x1), (y0, y1), _ = bounds(coords)
+        self.assertAlmostEqual((x0 + x1) / 2, 7.0, places=6)
+        self.assertAlmostEqual((y0 + y1) / 2, -3.0, places=6)
+
+    def test_a_profile_that_does_not_close_on_the_axis_is_refused(self):
+        with self.assertRaises(ValueError):
+            meshgen.lathe(0, 0, [(2, 0), (2, 5)], 16)
+
+
 if __name__ == "__main__":
     unittest.main()

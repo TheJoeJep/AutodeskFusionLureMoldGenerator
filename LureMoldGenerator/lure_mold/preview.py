@@ -136,24 +136,22 @@ def _draw_half(group, plan, settings, lure_length, lure_height,
             line(_circle(cavity.sprue.x, cavity.sprue.y,
                          settings.sprue_diameter / 2, 0.0), SPRUE_COLOUR)
 
-        if cavity.vent is not None:
+        for vent in cavity.vents:
             radius = max(settings.vent_diameter / 2, 0.4)
-            if cavity.vent_entry is not None:
-                along_x = abs(cavity.vent_entry.x - cavity.vent.x) >= abs(
-                    cavity.vent_entry.y - cavity.vent.y
+            if vent.entry is not None:
+                along_x = abs(vent.entry.x - vent.point.x) >= abs(
+                    vent.entry.y - vent.point.y
                 )
                 for side in (1, -1):
                     if along_x:
-                        a = (cavity.vent.x, cavity.vent.y + side * radius, 0.0)
-                        b = (cavity.vent_entry.x,
-                             cavity.vent_entry.y + side * radius, 0.0)
+                        a = (vent.point.x, vent.point.y + side * radius, 0.0)
+                        b = (vent.entry.x, vent.entry.y + side * radius, 0.0)
                     else:
-                        a = (cavity.vent.x + side * radius, cavity.vent.y, 0.0)
-                        b = (cavity.vent_entry.x + side * radius,
-                             cavity.vent_entry.y, 0.0)
+                        a = (vent.point.x + side * radius, vent.point.y, 0.0)
+                        b = (vent.entry.x + side * radius, vent.entry.y, 0.0)
                     line([a, b], SPRUE_COLOUR, closed=False)
             else:
-                line(_circle(cavity.vent.x, cavity.vent.y, radius, 0.0),
+                line(_circle(vent.point.x, vent.point.y, radius, 0.0),
                      SPRUE_COLOUR)
 
     if getattr(plan, "runner", None) is not None:
