@@ -97,6 +97,10 @@ rather keep them separate to hide one and inspect the other.
 | Alignment pegs | Diameter / Height | 5 mm |
 | Alignment pegs | Fit clearance | 0.2 mm |
 | Alignment pegs | Lead-in chamfer | 0.6 mm |
+| Printer | Check it fits the bed | on |
+| Printer | Bed width / depth | 220 / 220 mm |
+| Printer | Fit the grid to the bed | off |
+| Printer | Plastisol density | 1.02 g/cm3 |
 | Injection | Injection port | Edge |
 | Injection | Sprue diameter | 4 mm |
 | Injection | Funnel diameter | 8 mm |
@@ -201,12 +205,39 @@ channel lying on that plane comes anywhere near the air caught in the tip. The
 riser leaves a hole to clear out after printing, which is the price of reaching
 the trap at all.
 
+### Will it print, and what will it weigh?
+
+The readout answers both before you generate anything.
+
+**Printed size is not the block size.** Laid out flat, what goes on the plate
+is both halves side by side: `2 x block_y + gap`, not `block_y`. A 114 x 53 mm
+block prints as 114 x 117 mm -- nearly square, from a block that is more than
+two to one. Reporting the block is how you end up generating a mold that cannot
+physically print, so the readout gives the printed footprint and warns when it
+will not fit the bed.
+
+**Fit the grid to the bed** turns that round: instead of typing Columns and
+Rows and finding out, enter the bed size and it fits as many cavities as will
+print in one go. On a 256 x 256 mm bed a 100 mm bait comes out 2 x 2.
+
+**Shot weight** is the number anglers actually talk in. The cavity volume is
+already known exactly, so grams per bait, grams for the whole shot, and grams
+of feed -- the sprue, gates, runner and vents you trim off and put back in the
+pot -- all come for free. Plain plastisol runs about 1.02 g/cm3, which is a
+gallon to 8.5 lb; salt-loaded plastic is heavier, so it is a setting.
+
 ### What gets checked
 
 A downloaded model is often more than the shape you can see, and every extra
 piece gets subtracted from the block along with the lure. Before anything is
 cut, the mesh is broken into its connected pieces and three kinds are thrown
 out:
+
+- a lure whose **finished length** is under 5 mm or over 500 mm, which almost
+  always means the model was exported in the wrong unit -- metres arrive a
+  thousand times too small, inches about 25 times too big.
+
+And of the mesh itself:
 
 - **specks** under 1% of the main shape -- debris left by somebody else's
   boolean. Each would have cut a pocket of its own somewhere in a wall.
@@ -359,7 +390,7 @@ dataclass fields. That catches renames, which is how a stale
 python -m unittest discover -s tests -v
 ```
 
-263 tests, no dependencies beyond the standard library.
+285 tests, no dependencies beyond the standard library.
 
 | File | Covers |
 |---|---|

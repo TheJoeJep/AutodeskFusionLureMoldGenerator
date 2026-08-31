@@ -52,7 +52,7 @@ LureMoldGenerator/
     ├── preview.py                CustomGraphics live overlay
     ├── store.py                  settings persisted on the lure body
     └── ui_command.py             command definition and event handlers
-tests/                            263 tests, stdlib unittest, no pytest,
+tests/                            285 tests, stdlib unittest, no pytest,
 ├── test_layout.py                all run OUTSIDE Fusion
 ├── test_meshgen.py
 ├── test_orient.py
@@ -348,6 +348,37 @@ account for. Relief, channels and peg holes all remove more, so it is a floor
 rather than an estimate -- but a boolean that quietly did nothing fails it, and
 that is the failure mode with no other symptom.
 
+### 6.5.4 What it tells you before you build
+
+*Added during implementation.* Three readouts that cost almost nothing because
+the numbers were already known, and each closes a way of wasting a build.
+
+**The printed footprint is not the block.** Laid out flat the two halves sit
+side by side, so what goes on the plate is `2 * block_y + LAYOUT_GAP`. A
+114 x 53 block prints as 114 x 117 -- nearly square from a block that is over
+two to one. `MoldLayout` carries `printed_x`/`printed_y` and the readout quotes
+those; reporting the block is how a tool generates something that cannot
+physically print. With a bed size set, exceeding it warns, and says when
+turning it 90 degrees on the plate would do.
+
+**`fit_grid_to_bed` turns that round**, working the grid out from the bed
+rather than from typing. The constraint is separable -- columns bounded by the
+bed's X, rows by its Y -- so no search is needed. Resolved before
+`compute_layout` by `resolve_grid`, in the same style as `resolve_parting`.
+
+**Shot weight.** Cavity volume is known exactly, so grams per bait, per shot,
+and of feed follow from a density. Feed -- sprue, gates, runner, vents -- is
+quoted separately because it is trimmed off and goes back in the pot.
+`channel_volume` is the frustum formula, which covers all of them since a
+cylinder and a cone are both special cases. Default density 1.02 g/cm3: a
+gallon of plastisol to about 8.5 lb.
+
+**Scale sanity.** STL and OBJ carry no units, so an exporter set to metres
+produces a model a thousand times too small and one set to inches about 25
+times too big. Under 5 mm or over 500 mm finished, the layout says so and names
+the likely cause. The check is on the finished size, so scaling with Finished
+length clears it.
+
 ### 6.6 Where the mold splits
 
 The parting plane was originally fixed at the middle of the lure's bounding
@@ -533,6 +564,10 @@ Native `CommandInputs` — chosen over an HTML palette for unit-aware value inpu
 | Lure | Flip lure direction | bool | off |
 | Grid | Columns (N) | integer spinner | 1 |
 | Grid | Rows (M) | integer spinner | 1 |
+| Printer | Check it fits the bed | bool | on |
+| Printer | Bed width / depth | value (mm) | 220 / 220 |
+| Printer | Fit the grid to the bed | bool | off |
+| Printer | Plastisol density | value (unitless, g/cm3) | 1.02 |
 | Margins | Margin X | value (mm) | 10 |
 | Margins | Margin Y | value (mm) | 10 |
 | Margins | Margin Z | value (mm) | 10 |
@@ -596,7 +631,7 @@ Every failure produces a specific, actionable message. No silent failures, no ge
 
 ## 10. Testing
 
-**263 tests, stdlib `unittest`, no dependencies, all outside Fusion.**
+**285 tests, stdlib `unittest`, no dependencies, all outside Fusion.**
 
 | File | Covers |
 |---|---|

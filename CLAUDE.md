@@ -107,7 +107,7 @@ order-dependent build steps. Extend it when you add a step whose order matters.
 ## Working on it
 
 ```bash
-python -m unittest discover -s tests -v          # 263 tests, stdlib only
+python -m unittest discover -s tests -v          # 285 tests, stdlib only
 powershell -ExecutionPolicy Bypass -File .\sync-addin.ps1
 ```
 
@@ -165,6 +165,12 @@ carried outwards. It also fixes features thinner than a cell, which could
 otherwise fall between two rows of nodes and mark nothing at all -- that is
 what left one vent with no land around it, swallowed by the recess partway to
 the block face.
+
+**What has to fit on the printer is not the block.** Laid out flat the two
+halves sit side by side, so the footprint is `2 * block_y + LAYOUT_GAP`. A
+114x53 block prints as 114x117. `MoldLayout.printed_x/printed_y` carry it;
+report those, never the block, or the tool will happily generate something
+that cannot physically print.
 
 **Cost is in the mesh booleans, so count the cutter's triangles.** The relief
 cutter's cap is a flat rectangle; copying the grid onto it doubled the body for

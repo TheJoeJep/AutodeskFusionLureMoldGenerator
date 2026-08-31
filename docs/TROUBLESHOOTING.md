@@ -197,6 +197,40 @@ Ramp length is `1.5 x depth / tan(angle)`: 2.52 mm at the 50 degree default
 with a 2 mm recess. See the entry above for why it is not simply
 `depth / tan(angle)`.
 
+### "Printed, this mold needs N x M mm"
+
+The mold does not fit the bed you told it about, under Printer. Note the
+number is the **printed** footprint, not the block: laid out flat both halves
+sit side by side, so it is `2 x block_y + 10mm`, and a block that is two to one
+prints nearly square.
+
+Either use a smaller grid, or tick **Fit the grid to the bed** and let it work
+Columns and Rows out for you. If the message says it fits turned 90 degrees,
+just rotate it on the plate in your slicer.
+
+Turn the check off under Printer if you are exporting for someone else's
+machine.
+
+### "The lure measures Nmm long, which is almost certainly the wrong unit"
+
+STL and OBJ carry no units, so an exporter set to metres produces a model that
+arrives a thousand times too small, and one set to inches about 25 times too
+big. Anything under 5 mm or over 500 mm finished gets this warning.
+
+Set **Finished length** under Lure to the size you actually want and the whole
+mold scales with it. The warning is about the finished size, so it goes away
+once you do.
+
+### The shot weight looks wrong
+
+It is cavity volume times **Plastisol density**, under Printer. The default
+1.02 g/cm3 is plain plastisol -- a gallon to about 8.5 lb. Salt-loaded plastic
+is a good deal heavier; raise it to match what you actually pour.
+
+The "feed" figure is the sprue, gates, runner and vents. That plastic is real
+and has to be melted, but it gets trimmed off and goes back in the pot, so it
+is quoted separately from the baits.
+
 ### "This mesh is in more than one piece"
 
 Not an error. Downloaded models routinely carry more than the shape you can

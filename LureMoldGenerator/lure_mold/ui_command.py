@@ -132,6 +132,11 @@ def _read_settings(inputs):
         relief_depth=_mm(inputs.itemById("reliefDepth")),
         # Fusion hands angle inputs back in radians, whatever unit is shown.
         relief_angle=math.degrees(inputs.itemById("reliefAngle").value),
+        bed_check=inputs.itemById("bedCheck").value,
+        bed_x=_mm(inputs.itemById("bedX")),
+        bed_y=_mm(inputs.itemById("bedY")),
+        fit_grid_to_bed=inputs.itemById("fitGridToBed").value,
+        plastisol_density=inputs.itemById("plastisolDensity").value,
         parting_auto=inputs.itemById("partingAuto").value,
         parting_offset=_mm(inputs.itemById("partingOffset")),
     )
@@ -287,6 +292,7 @@ def _plan_for(inputs):
         nose_at_positive_x=info.nose_at_positive_x,
     )
     settings = mold_builder.resolve_parting(settings, info, length)
+    settings = layout.resolve_grid(dims, settings)
     plan = layout.compute_layout(
         dims, settings,
         cavity_distance=mold_builder.scaled_footprint(info, length),
@@ -322,6 +328,37 @@ def _sync_parting(inputs):
         pass
 
 
+def _weight_line(inputs, plan, settings):
+    """What the shot weighs -- the number anglers actually talk in."""
+    try:
+        info = _analyse(_selected_body(inputs))
+        volume = info.volume_mm3
+        if settings.target_length > 0 and info.length > 0:
+            volume *= (settings.target_length / info.length) ** 3
+        bait, total, feed = layout.shot_weight(plan, settings, volume)
+    except Exception:
+        return "&nbsp;"
+    if len(plan.cavities) == 1:
+        return "%.1f g per bait (+%.1f g feed)" % (bait, feed)
+    return "%.1f g per bait, %.1f g the shot (+%.1f g feed)" % (bait, total, feed)
+
+
+def _sync_grid(inputs):
+    """Grey out the grid spinners when the bed is deciding them."""
+    fit = inputs.itemById("fitGridToBed")
+    if fit is None:
+        return
+    for ident in ("columns", "rows"):
+        item = inputs.itemById(ident)
+        if item is not None:
+            item.isEnabled = not fit.value
+    for ident in ("bedX", "bedY"):
+        item = inputs.itemById(ident)
+        if item is not None:
+            check = inputs.itemById("bedCheck")
+            item.isEnabled = fit.value or (check is not None and check.value)
+
+
 def _update_readout(inputs):
     readout = inputs.itemById("readout")
     if readout is None:
@@ -342,6 +379,8 @@ def _update_readout(inputs):
     lines = [
         "<b>Mold: %.1f x %.1f x %.1f mm</b>"
         % (plan.block_x, plan.block_y, plan.block_z),
+        "printed %.0f x %.0f mm &nbsp;|&nbsp; %s"
+        % (plan.printed_x, plan.printed_y, _weight_line(inputs, plan, settings)),
         "%d cavit%s &nbsp;|&nbsp; %d peg%s &nbsp;|&nbsp; halves %.1f / %.1f mm"
         % (
             len(plan.cavities),
@@ -501,6 +540,7 @@ class _InputChangedHandler(adsk.core.InputChangedEventHandler):
                         except Exception:
                             pass
             _sync_parting(inputs)
+            _sync_grid(inputs)
             _sync_vent_inputs(inputs)
             _update_readout(inputs)
         except Exception:
@@ -554,6 +594,11 @@ def _apply_settings(inputs, settings):
     inputs.itemById("reliefLand").value = settings.relief_land * MM
     inputs.itemById("reliefDepth").value = settings.relief_depth * MM
     inputs.itemById("reliefAngle").value = math.radians(settings.relief_angle)
+    inputs.itemById("bedCheck").value = settings.bed_check
+    inputs.itemById("bedX").value = settings.bed_x * MM
+    inputs.itemById("bedY").value = settings.bed_y * MM
+    inputs.itemById("fitGridToBed").value = settings.fit_grid_to_bed
+    inputs.itemById("plastisolDensity").value = settings.plastisol_density
     inputs.itemById("partingAuto").value = settings.parting_auto
     inputs.itemById("partingOffset").value = settings.parting_offset * MM
 
@@ -591,6 +636,32 @@ class _CreatedHandler(adsk.core.CommandCreatedEventHandler):
             )
             grid_group.addIntegerSpinnerCommandInput(
                 "rows", "Rows", 1, 20, 1, defaults.rows
+            )
+
+            printer_group = inputs.addGroupCommandInput(
+                "printerGroup", "Printer"
+            ).children
+            printer_group.addBoolValueInput(
+                "bedCheck", "Check it fits the bed", True, "",
+                defaults.bed_check,
+            )
+            value(printer_group, "bedX", "Bed width (X)", defaults.bed_x)
+            value(printer_group, "bedY", "Bed depth (Y)", defaults.bed_y)
+            fit = printer_group.addBoolValueInput(
+                "fitGridToBed", "Fit the grid to the bed", True, "",
+                defaults.fit_grid_to_bed,
+            )
+            fit.tooltip = (
+                "Work Columns and Rows out from the bed instead of typing "
+                "them, fitting as many cavities as will print in one go."
+            )
+            density = printer_group.addValueInput(
+                "plastisolDensity", "Plastisol density (g/cm^3)", "",
+                adsk.core.ValueInput.createByReal(defaults.plastisol_density),
+            )
+            density.tooltip = (
+                "Used for the shot weight readout. Plain plastisol is about "
+                "1.02; salt-loaded plastic runs a good deal heavier."
             )
 
             margin_group = inputs.addGroupCommandInput(

@@ -18,7 +18,7 @@ Solid, and verified on real models:
   option.
 - Mesh audit both ways: stray shells out of the lure, loose islands out of the
   mold, sealed pockets reported, cut volume sanity-checked.
-- 263 tests, all outside Fusion.
+- 285 tests, all outside Fusion.
 
 The mold that comes out is **geometrically** right. Most of what follows is
 about making it a thing you can actually use at the bench.
@@ -50,29 +50,26 @@ straightforward offset of the block outline, so the geometry is easy.
 **Effort:** moderate. Bolt holes reuse `_peg_candidates` and the collision
 tests. A lip is a new layout primitive but a simple one.
 
-## 2. Will it fit the printer?
+## 2. Will it fit the printer? -- DONE
 
-There is no bed-size setting, so nothing stops you generating a 340 mm mold for
-a 220 mm printer. Most people are bed-limited before they are anything-else
-limited, and the grid is currently chosen by hand.
+Bed size under Printer, a warning when it does not fit, and **Fit the grid to
+the bed** to work Columns and Rows out instead of typing them.
 
-- Enter bed X/Y, warn when the block exceeds it.
-- Better: pick the grid *from* the bed — "as many cavities as fit on 220 x 220".
-- Better still: report both halves laid out, since that is what actually has to
-  fit, and it is `2 x block_y + gap`, not `block_y`.
+The readout now gives the **printed** footprint rather than the block, which was
+the real trap: laid out flat both halves sit side by side, so it is
+`2 x block_y + gap`. A 114 x 53 block prints as 114 x 117 -- nearly square from
+a block that is over two to one.
 
-**Effort:** small. It is arithmetic over `compute_layout`, plus a dialog group.
-The third point is a real trap worth fixing regardless — the readout currently
-reports the block, not the printed footprint.
+Still open: the bed size is stored per lure body along with everything else, so
+it has to be re-entered per model. It is a property of the machine, not the
+bait. Worth a document-level or user-level store of its own.
 
-## 3. Tell me what the bait weighs
+## 3. Tell me what the bait weighs -- DONE
 
-The cavity volume is already known to four decimal places. Multiplied by
-plastisol density it gives grams per bait and grams per shot, which is the
-number anglers actually talk in — and it tells you how much plastic to heat.
+Grams per bait, grams for the shot, and grams of feed, in the readout. Density
+is a setting, defaulting to 1.02 g/cm3 -- a gallon of plastisol to about 8.5 lb
+-- because salt-loaded plastic runs a good deal heavier.
 
-**Effort:** trivial. One line of arithmetic and a readout line. Highest value
-per unit of work in this document.
 
 ## 4. A Check button
 
@@ -93,10 +90,8 @@ The mesh audit closed the big one. These are what is left:
   test would catch it before the build rather than after.
   *Effort: moderate. It is the only item here that is real geometry code.*
 
-- **Scale sanity.** A model exported in metres imports as a 0.09 mm lure; in
-  inches, as a 2170 mm one. Both produce absurd molds with no warning. A check
-  that the detected length is between roughly 5 mm and 500 mm costs one line.
-  *Effort: trivial.*
+- ~~**Scale sanity.**~~ DONE. Under 5 mm or over 500 mm finished gets a
+  warning naming the likely cause, since STL and OBJ carry no units at all.
 
 - **Degenerate triangles.** Zero-area faces and duplicate vertices make
   booleans noisy. Cheap to count, cheap to report.
@@ -148,14 +143,13 @@ The mesh audit closed the big one. These are what is left:
 
 ---
 
-## What I would do first
+## What I would do next
 
-**Weight readout, bed fit, and scale sanity**, together. They are a couple of
-hours between them, and they change what the tool tells you on every single
-run.
+Weight readout, bed fit and scale sanity are **done**.
 
-**Then clamping.** It is the difference between a mold that is right and a mold
-that works.
+**Clamping is next.** It is the difference between a mold that is right and a
+mold that works, and it is now the only thing in this document standing between
+the tool and a bait you can actually pour.
 
-**Then the Check button**, because by that point there is enough to check that
+**Then the Check button**, because there is enough worth checking now that
 waiting 50 seconds to find out is the wrong shape for the tool.

@@ -10,6 +10,7 @@ Coordinate convention (after the lure has been oriented):
     The block is centred on the origin in X and Y.
 """
 
+import dataclasses
 import math
 from dataclasses import dataclass
 
@@ -22,6 +23,14 @@ MIN_PRINTABLE_MARGIN = 2.0  # thinner walls than this will not print well
 MIN_PRINTABLE_VENT = 0.8  # narrower vents than this close up when printed
 LAYOUT_GAP = 10.0  # space left between the two halves when laid out flat
 MAX_VENTS_PER_CAVITY = 8  # a sanity bound, not a design limit
+# Outside this range a model is almost certainly in the wrong unit: exported in
+# metres it arrives a thousand times too small, in inches about 25 times too
+# big, and either way the mold is silently absurd.
+MIN_SENSIBLE_LENGTH = 5.0
+MAX_SENSIBLE_LENGTH = 500.0
+# Plastisol runs about a gallon to 8.5lb, which is 1.02 g/cm3. Salt-loaded
+# plastic is a good deal heavier, so this is a default and not a constant.
+DEFAULT_DENSITY = 1.02
 # The relief ramp angle is clamped away from 0 and 90 degrees: at 0 the ramp
 # would be infinitely long, at 90 it would be a vertical step.
 MIN_RELIEF_ANGLE = 5.0
@@ -106,6 +115,15 @@ class MoldSettings:
     relief_land: float = 4.0  # flat band kept around each feature, mm
     relief_depth: float = 2.0  # how far the recessed area drops, mm
     relief_angle: float = 50.0  # wall angle between land and recess, degrees
+    # The printer. What has to fit on the plate is both halves side by side,
+    # which is not the block -- see MoldLayout.printed_y.
+    bed_check: bool = True
+    bed_x: float = 220.0
+    bed_y: float = 220.0
+    # Work the grid out from the bed rather than typing it in.
+    fit_grid_to_bed: bool = False
+    # g/cm3, for the shot weight readout. Salt-loaded plastic runs heavier.
+    plastisol_density: float = DEFAULT_DENSITY
 
 
 @dataclass(frozen=True)
@@ -182,6 +200,11 @@ class MoldLayout:
     block_x: float
     block_y: float
     block_z: float
+    # The footprint on the print bed. Laid out flat that is both halves side
+    # by side with the gap between them, not the block -- reporting the block
+    # is how you generate something that cannot physically print.
+    printed_x: float
+    printed_y: float
     top_thickness: float
     bottom_thickness: float
     parting_offset: float
@@ -215,6 +238,92 @@ def _nearest_face(point, column, row, settings, block_x, block_y):
         return None
     options.sort(key=lambda pair: pair[0])
     return options[0][1]
+
+
+def channel_volume(length, r0, r1):
+    """Volume of a round channel that tapers from r0 to r1."""
+    return math.pi * abs(length) * (r0 * r0 + r0 * r1 + r1 * r1) / 3.0
+
+
+def shot_weight(plan, settings, cavity_volume_mm3, density=None):
+    """(grams per bait, grams of bait in a shot, grams of feed).
+
+    Feed is the sprue, gates, runner and vents -- plastic you pour and then
+    trim off. Worth knowing on its own: it is what goes back in the pot.
+    """
+    if density is None:
+        density = getattr(settings, "plastisol_density", DEFAULT_DENSITY)
+    per_mm3 = density / 1000.0  # g/cm3 over mm3 per cm3
+
+    bait = cavity_volume_mm3 * per_mm3
+    sprue_r = settings.sprue_diameter / 2
+    funnel_r = settings.funnel_diameter / 2
+    vent_r = settings.vent_diameter / 2
+
+    feed = 0.0
+    for cavity in plan.cavities:
+        if cavity.sprue is not None:
+            if cavity.sprue_entry is None:
+                # A top sprue drops through the lid, widening as it goes.
+                feed += channel_volume(plan.top_thickness, sprue_r, funnel_r)
+            else:
+                length = math.hypot(
+                    cavity.sprue_entry.x - cavity.sprue.x,
+                    cavity.sprue_entry.y - cavity.sprue.y,
+                )
+                # A gate into a runner keeps its bore; only a channel ending
+                # on a block face opens out into a funnel.
+                outer = sprue_r if plan.runner is not None else funnel_r
+                feed += channel_volume(length, sprue_r, outer)
+
+        for vent in cavity.vents:
+            if vent.entry is None:
+                length = plan.top_thickness
+            else:
+                length = math.hypot(
+                    vent.entry.x - vent.point.x, vent.entry.y - vent.point.y
+                )
+            feed += channel_volume(length, vent_r, vent_r)
+
+    if plan.runner is not None:
+        feed += channel_volume(
+            plan.runner.y_to - plan.runner.y_from,
+            plan.runner.diameter / 2,
+            funnel_r,
+        )
+
+    return bait, bait * len(plan.cavities), feed * per_mm3
+
+
+def max_grid_for_bed(lure, settings):
+    """The biggest grid whose printed footprint still fits the bed.
+
+    Separable, so no search is needed: columns are bounded by the bed's X and
+    rows by its Y. Never returns zero of either -- a bed too small for one
+    cavity is somebody's problem to see reported, not to have silently
+    rounded away.
+    """
+    cell_x = lure.length + 2 * settings.margin_x
+    cell_y = lure.height + 2 * settings.margin_y
+    bed_x = getattr(settings, "bed_x", 0.0)
+    bed_y = getattr(settings, "bed_y", 0.0)
+    if cell_x <= 0 or cell_y <= 0 or bed_x <= 0 or bed_y <= 0:
+        return max(settings.columns, 1), max(settings.rows, 1)
+
+    columns = int(bed_x // cell_x)
+    if getattr(settings, "lay_out_flat", True):
+        rows = int((bed_y - LAYOUT_GAP) // (2 * cell_y))
+    else:
+        rows = int(bed_y // cell_y)
+    return max(columns, 1), max(rows, 1)
+
+
+def resolve_grid(lure, settings):
+    """Fill the grid in from the printer bed, if that is what was asked for."""
+    if not getattr(settings, "fit_grid_to_bed", False):
+        return settings
+    columns, rows = max_grid_for_bed(lure, settings)
+    return dataclasses.replace(settings, columns=columns, rows=rows)
 
 
 def relief_run(depth, angle_degrees):
@@ -539,6 +648,39 @@ def compute_layout(
             % (blocked, len(cavities))
         )
 
+    printed_x = block_x
+    printed_y = (
+        2 * block_y + LAYOUT_GAP
+        if getattr(settings, "lay_out_flat", True)
+        else block_y
+    )
+
+    if lure.length > 0 and not (
+        MIN_SENSIBLE_LENGTH <= lure.length <= MAX_SENSIBLE_LENGTH
+    ):
+        warnings.append(
+            "The lure measures %.4gmm long, which is almost certainly the "
+            "wrong unit - a model exported in metres arrives a thousand times "
+            "too small, one in inches about 25 times too big. Set a finished "
+            "length to put the scale right." % lure.length
+        )
+
+    if getattr(settings, "bed_check", False):
+        bed_x = getattr(settings, "bed_x", 0.0)
+        bed_y = getattr(settings, "bed_y", 0.0)
+        if bed_x > 0 and bed_y > 0 and (printed_x > bed_x or printed_y > bed_y):
+            turned = printed_x <= bed_y and printed_y <= bed_x
+            warnings.append(
+                "Printed, this mold needs %.0f x %.0fmm - that is both halves "
+                "side by side, not the block - and the bed is %.0f x %.0fmm.%s"
+                % (
+                    printed_x, printed_y, bed_x, bed_y,
+                    " It fits turned 90 degrees on the plate."
+                    if turned
+                    else " Use a smaller grid, or tick Fit the grid to the bed.",
+                )
+            )
+
     thinnest = min(settings.margin_x, settings.margin_y, settings.margin_z)
     if thinnest < MIN_PRINTABLE_MARGIN:
         warnings.append(
@@ -610,6 +752,8 @@ def compute_layout(
         block_x=block_x,
         block_y=block_y,
         block_z=cell_z,
+        printed_x=printed_x,
+        printed_y=printed_y,
         top_thickness=top_thickness,
         bottom_thickness=bottom_thickness,
         parting_offset=parting,

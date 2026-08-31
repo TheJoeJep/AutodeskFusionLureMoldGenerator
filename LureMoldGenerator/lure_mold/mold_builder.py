@@ -545,6 +545,7 @@ def build(design, lure_body, settings):
     )
 
     settings = resolve_parting(settings, lure, length)
+    settings = layout_mod.resolve_grid(dims, settings)
     plan = layout_mod.compute_layout(
         dims, settings,
         cavity_distance=scaled_footprint(lure, length),

@@ -17,6 +17,11 @@ from lure_mold.layout import (  # noqa: E402
     MoldSettings,
     compute_layout,
     relief_run,
+    channel_volume,
+    max_grid_for_bed,
+    resolve_grid,
+    shot_weight,
+    LAYOUT_GAP,
     MAX_VENTS_PER_CAVITY,
 )  # noqa: E402
 
@@ -311,7 +316,11 @@ class TestInjectionModes(unittest.TestCase):
         self.assertEqual(len(layout.cavities), 5)
         for cavity in layout.cavities:
             self.assertIsNotNone(cavity.sprue_entry)
-        self.assertEqual(layout.warnings, ())
+        # Nothing to say about injection. It does warn that a 5-row mold is
+        # 510mm printed and will not fit a 220mm bed, which is true.
+        self.assertEqual(
+            [w for w in layout.warnings if "inject" in w.lower()], []
+        )
 
     def test_interior_columns_cannot_reach_the_edge_and_say_so(self):
         # With the nose at +X only the last column has a clear run out.
@@ -783,6 +792,175 @@ class TestChoosingWhereTheVentsGo(unittest.TestCase):
         cavity, _ = self.cavity()
         for vent in cavity.vents:
             self.assertIsNotNone(vent.entry)
+
+
+class TestWhatTheShotWeighs(unittest.TestCase):
+    """Anglers talk in grams, and the cavity volume is already known exactly."""
+
+    def test_a_straight_channel_is_a_cylinder(self):
+        import math
+        self.assertAlmostEqual(
+            channel_volume(10.0, 2.0, 2.0), math.pi * 4.0 * 10.0, places=6
+        )
+
+    def test_a_channel_tapering_to_nothing_is_a_cone(self):
+        import math
+        self.assertAlmostEqual(
+            channel_volume(9.0, 3.0, 0.0), math.pi * 9.0 * 9.0 / 3.0, places=6
+        )
+
+    def test_a_channel_of_no_length_holds_nothing(self):
+        self.assertAlmostEqual(channel_volume(0.0, 3.0, 1.0), 0.0)
+
+    def test_one_cubic_centimetre_of_plastisol_weighs_its_density(self):
+        quiet = MoldSettings(injection_mode="none", vents_enabled=False)
+        plan = compute_layout(default_lure(), quiet)
+        bait, total, feed = shot_weight(plan, quiet, 1000.0, density=1.02)
+        self.assertAlmostEqual(bait, 1.02)
+        self.assertAlmostEqual(total, 1.02)
+        self.assertAlmostEqual(feed, 0.0)
+
+    def test_every_cavity_adds_its_own_bait(self):
+        settings = MoldSettings(columns=3, rows=2, injection_mode="none")
+        plan = compute_layout(default_lure(), settings)
+        bait, total, _ = shot_weight(plan, settings, 1000.0, density=1.0)
+        self.assertAlmostEqual(bait, 1.0)
+        self.assertAlmostEqual(total, 6.0)
+
+    def test_the_sprue_and_vents_count_as_feed_not_as_bait(self):
+        settings = MoldSettings()
+        plan = compute_layout(default_lure(), settings)
+        bait, total, feed = shot_weight(plan, settings, 1000.0, density=1.0)
+        self.assertAlmostEqual(bait, 1.0)
+        self.assertAlmostEqual(total, 1.0)
+        self.assertGreater(feed, 0.0, "an edge sprue holds plastic too")
+
+    def test_a_runner_mold_carries_more_feed_than_an_edge_one(self):
+        edge = MoldSettings(columns=2)
+        runner = MoldSettings(columns=2, injection_mode="runner")
+        _, _, edge_feed = shot_weight(
+            compute_layout(default_lure(), edge), edge, 1000.0, density=1.0
+        )
+        _, _, runner_feed = shot_weight(
+            compute_layout(default_lure(), runner), runner, 1000.0, density=1.0
+        )
+        self.assertGreater(runner_feed, edge_feed)
+
+
+class TestFittingThePrinter(unittest.TestCase):
+    """What has to fit is both halves side by side, not the block."""
+
+    def test_the_printed_footprint_is_both_halves_plus_the_gap(self):
+        plan = compute_layout(default_lure(), MoldSettings(lay_out_flat=True))
+        self.assertAlmostEqual(plan.printed_x, plan.block_x)
+        self.assertAlmostEqual(
+            plan.printed_y, 2 * plan.block_y + LAYOUT_GAP
+        )
+
+    def test_a_mold_left_closed_only_needs_the_block(self):
+        plan = compute_layout(default_lure(), MoldSettings(lay_out_flat=False))
+        self.assertAlmostEqual(plan.printed_y, plan.block_y)
+
+    def test_a_mold_too_big_for_the_bed_is_flagged(self):
+        # 120 x 50 block -> 120 x 110 printed. A 100mm bed cannot take it.
+        plan = compute_layout(
+            default_lure(),
+            MoldSettings(bed_check=True, bed_x=100.0, bed_y=100.0),
+        )
+        self.assertTrue(
+            any("printer" in w.lower() or "bed" in w.lower() for w in plan.warnings),
+            plan.warnings,
+        )
+
+    def test_a_mold_that_fits_says_nothing(self):
+        plan = compute_layout(
+            default_lure(),
+            MoldSettings(bed_check=True, bed_x=300.0, bed_y=300.0),
+        )
+        self.assertFalse(
+            any("bed" in w.lower() for w in plan.warnings), plan.warnings
+        )
+
+    def test_the_check_can_be_turned_off(self):
+        plan = compute_layout(
+            default_lure(),
+            MoldSettings(bed_check=False, bed_x=10.0, bed_y=10.0),
+        )
+        self.assertFalse(
+            any("bed" in w.lower() for w in plan.warnings), plan.warnings
+        )
+
+    def test_the_grid_can_be_worked_out_from_the_bed(self):
+        # cell 120 x 50. On 260 x 230: 2 columns, and rows are limited by
+        # 2*r*50 + 10 <= 230, so r = 2.
+        settings = MoldSettings(bed_x=260.0, bed_y=230.0)
+        self.assertEqual(max_grid_for_bed(default_lure(), settings), (2, 2))
+
+    def test_a_closed_mold_fits_twice_as_many_rows(self):
+        settings = MoldSettings(bed_x=260.0, bed_y=230.0, lay_out_flat=False)
+        self.assertEqual(max_grid_for_bed(default_lure(), settings), (2, 4))
+
+    def test_a_bed_too_small_for_even_one_still_gives_one(self):
+        settings = MoldSettings(bed_x=20.0, bed_y=20.0)
+        self.assertEqual(max_grid_for_bed(default_lure(), settings), (1, 1))
+
+    def test_fitting_to_the_bed_replaces_the_typed_grid(self):
+        settings = MoldSettings(
+            columns=7, rows=7, fit_grid_to_bed=True, bed_x=260.0, bed_y=230.0
+        )
+        resolved = resolve_grid(default_lure(), settings)
+        self.assertEqual((resolved.columns, resolved.rows), (2, 2))
+
+    def test_the_typed_grid_is_left_alone_when_not_fitting(self):
+        settings = MoldSettings(columns=7, rows=3, bed_x=260.0, bed_y=230.0)
+        resolved = resolve_grid(default_lure(), settings)
+        self.assertEqual((resolved.columns, resolved.rows), (7, 3))
+
+    def test_a_fitted_grid_actually_fits(self):
+        settings = resolve_grid(
+            default_lure(),
+            MoldSettings(fit_grid_to_bed=True, bed_x=260.0, bed_y=230.0),
+        )
+        plan = compute_layout(default_lure(), settings)
+        self.assertLessEqual(plan.printed_x, 260.0)
+        self.assertLessEqual(plan.printed_y, 230.0)
+
+
+class TestScaleSanity(unittest.TestCase):
+    """A model exported in the wrong unit is silently absurd otherwise."""
+
+    def test_a_lure_in_metres_is_flagged(self):
+        # 100mm exported as metres arrives as 0.1mm.
+        tiny = LureDims(length=0.1, height=0.03, thickness=0.012)
+        plan = compute_layout(tiny, MoldSettings())
+        self.assertTrue(
+            any("scale" in w.lower() or "unit" in w.lower() for w in plan.warnings),
+            plan.warnings,
+        )
+
+    def test_a_lure_in_inches_is_flagged(self):
+        # 100mm exported as inches arrives as 2540mm.
+        huge = LureDims(length=2540.0, height=762.0, thickness=305.0)
+        plan = compute_layout(huge, MoldSettings())
+        self.assertTrue(
+            any("scale" in w.lower() or "unit" in w.lower() for w in plan.warnings),
+            plan.warnings,
+        )
+
+    def test_an_ordinary_lure_says_nothing_about_scale(self):
+        plan = compute_layout(default_lure(), MoldSettings())
+        self.assertFalse(
+            any("scale" in w.lower() for w in plan.warnings), plan.warnings
+        )
+
+    def test_it_is_the_finished_size_that_gets_checked(self):
+        # compute_layout is handed the lure at its finished size, so a tiny
+        # model scaled up to something real never reaches the check at all.
+        scaled_up = LureDims(length=120.0, height=36.0, thickness=14.0)
+        plan = compute_layout(scaled_up, MoldSettings(target_length=120.0))
+        self.assertFalse(
+            any("unit" in w.lower() for w in plan.warnings), plan.warnings
+        )
 
 
 class TestReliefRamp(unittest.TestCase):
